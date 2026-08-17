@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    overflow-x: hidden;
+  }
+
+  /* Kağıt dokusu — çok hafif grain, zeminin üstünde sabit durur */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.5;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+  }
+
+  /* İçerik dokunun üstünde kalsın */
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  ::selection {
+    @apply bg-flag-soft text-ink;
+  }
+
+  /* Odak halkası — her yerde görünür ve tutarlı */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ink ring-offset-2 ring-offset-paper;
+  }
+
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-paper-deep;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ink-faint;
+    border-radius: 9999px;
+    border: 3px solid #faf8f4;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-muted;
+  }
+}
+
+@layer components {
+  /* ── Dosya kartı ─────────────────────────────────────────
+     Beyaz sayfa, ince kenar, kağıt gölgesi. */
+  .file-card {
+    @apply rounded-sm border border-paper-edge bg-paper-card shadow-paper;
+  }
+
+  /* Sol kenarında renkli dosya sekmesi olan kart */
+  .file-card-tabbed {
+    @apply file-card relative overflow-hidden;
+    border-left-width: 3px;
+  }
+
+  /* Gömük / ikincil yüzey */
+  .sunken {
+    @apply rounded-sm border border-paper-edge bg-paper-deep;
+  }
+
+  /* ── Dosya etiketi ───────────────────────────────────────
+     DOSYA NO · TUZAK · BÖLÜM 03 */
+  .label {
+    @apply font-mono text-[10px] font-medium uppercase tracking-[0.18em] text-ink-muted;
+  }
+
+  .label-chip {
+    @apply label inline-flex items-center gap-1.5 rounded-sm border px-2 py-1;
+  }
+
+  /* ── Cetvel çizgisi ──────────────────────────────────────
+     Belge bölümlerini ayıran ince çizgi. */
+  .rule {
+    @apply border-t border-paper-edge;
+  }
+
+  /* Kesik çizgi — "burası incelendi" hissi */
+  .rule-dashed {
+    border-top: 1px dashed theme('colors.paper.edge');
+  }
+
+  /* ── Düzeltme işareti ────────────────────────────────────
+     Hatalı metnin altına çekilen kırmızı dalgalı çizgi. */
+  .mark-underline {
+    text-decoration-line: underline;
+    text-decoration-style: wavy;
+    text-decoration-color: theme('colors.mark.DEFAULT');
+    text-decoration-thickness: 2px;
+    text-underline-offset: 5px;
+  }
+
+  /* ── Kenar notu (marginalia) ─────────────────────────────
+     "Doğrusu: …" — elle kenara düşülmüş not hissi. */
+  .marginalia {
+    @apply relative rounded-sm border-l-2 border-verify bg-verify-soft px-4 py-3 text-sm leading-relaxed text-ink;
+  }
+
+  /* ── Damga ───────────────────────────────────────────────
+     Yakalandı / kaçırıldı mührü. */
+  .stamp {
+    @apply inline-flex items-center gap-2 rounded-sm border-2 px-3 py-1.5 font-mono text-xs font-bold uppercase tracking-[0.16em];
+    transform: rotate(-3deg);
+  }
+  .stamp-mark {
+    @apply stamp border-mark text-mark;
+  }
+  .stamp-verify {
+    @apply stamp border-verify text-verify;
+  }
+  .stamp-flag {
+    @apply stamp border-flag text-flag;
+  }
+
+  /* ── Form alanı ──────────────────────────────────────────
+     Mobilde 16px ŞART: iOS Safari, 16px'ten küçük yazı tipli bir alana
+     odaklanınca sayfayı kendiliğinden yakınlaştırıyor ve düzen bozuluyor.
+     Geniş ekranda tasarımdaki 15px'e dönüyoruz. */
+  .field {
+    @apply w-full rounded-sm border border-paper-edge bg-paper-card px-4 py-3 text-base text-ink
+           placeholder:text-ink-faint focus:border-ink focus:outline-none focus:ring-1 focus:ring-ink
+           sm:text-[15px];
+  }
+
+  .field-label {
+    @apply mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-[0.14em] text-ink-muted;
+  }
+
+  /* ── Yardımcılar ─────────────────────────────────────────*/
+  .preserve-3d {
+    transform-style: preserve-3d;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Hareket azaltma tercihi — animasyonlar tamamen durur */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

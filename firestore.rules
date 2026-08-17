@@ -1,0 +1,100 @@
+rules_version = '2';
+
+// Firebase Console > Firestore Database > Kurallar sekmesine bu içeriği yapıştır.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isTeacher() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'teacher';
+    }
+
+    // Kullanıcı profilleri: herkes okuyabilir, sadece sahibi yazabilir.
+    //
+    // Rol kayıttan SONRA değiştirilemez — aksi hâlde öğrenci olarak kayıt
+    // olup kendi dokümanını `role: 'teacher'` diye güncelleyen biri bütün
+    // hoca yetkilerini ele geçirirdi. (Kayıt anında rol seçimi hâlâ
+    // istemci tarafındaki hoca koduna güveniyor; bkz. README.)
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == userId;
+      allow update: if signedIn() && request.auth.uid == userId
+        && request.resource.data.role == resource.data.role;
+      allow delete: if false;
+    }
+
+    // Dersler: giriş yapan herkes okur, sadece öğretim üyesi yazar.
+    match /lessons/{lessonId} {
+      allow read: if signedIn();
+      allow create: if isTeacher() && request.resource.data.teacherId == request.auth.uid;
+      allow update, delete: if isTeacher()
+        && resource.data.teacherId == request.auth.uid;
+    }
+
+    /* ════════════════════════════════════════════════════════
+       AMFİ / CANLI DERS
+       Öğrenciler hesap açmadan katılır; uygulama onları ANONİM
+       oturumla imzalar. Bu yüzden signedIn() burada anonim
+       kullanıcıyı da kapsar.
+
+       KURULUM: Firebase Console > Authentication > Sign-in method
+       bölümünden "Anonymous" sağlayıcısını ETKİNLEŞTİR, yoksa
+       öğrenciler katılamaz.
+       ════════════════════════════════════════════════════════ */
+
+    // Oturum: katılacaklar okur, yalnızca oturumu açan hoca yazar.
+    match /sessions/{sessionId} {
+      allow read: if signedIn();
+      allow create: if isTeacher() && request.resource.data.teacherId == request.auth.uid;
+      allow update, delete: if isTeacher() && resource.data.teacherId == request.auth.uid;
+    }
+
+    // Katılımcılar: herkes okur (canlı sıralama).
+    // Öğrenci kendini ekler; puanı yalnızca hoca günceller —
+    // öğrencinin kendi puanını yazabilmesi hile kapısı olurdu.
+    match /participants/{participantId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update: if isTeacher();
+      allow delete: if isTeacher();
+    }
+
+    // Ziller: öğrenci basar, silinemez/değiştirilemez.
+    // Hoca puanlama için okur.
+    match /buzzes/{buzzId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if false;
+    }
+
+    // Öğrenci notları (Amfi 2.0): öğrenci yazar, hoca cihazı Gemini
+    // sonucunu (status/geminiFeedback) işler.
+    //
+    // Doğrulamayı yalnızca hoca yazabilir — öğrenci kendi notunu
+    // "valid" işaretleyebilseydi puanı kendi verirdi.
+    match /studentNotes/{noteId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.resource.data.status == 'pending';
+      allow update: if isTeacher();
+      allow delete: if isTeacher();
+    }
+
+    // Ders sonu değerlendirmesi (5 yıldız): her katılımcı bir oy.
+    // Doküman kimliği katılımcıdan türetildiği için ikinci gönderim
+    // kendi oyunu günceller, başkasınınkini değil.
+    match /ratings/{ratingId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && request.resource.data.stars is number
+        && request.resource.data.stars >= 1
+        && request.resource.data.stars <= 5
+        && ratingId == 'rate_' + request.resource.data.participantId;
+      allow delete: if isTeacher();
+    }
+  }
+}

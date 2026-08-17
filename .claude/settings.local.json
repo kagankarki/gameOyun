@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(git --version; echo \"---\"; Get-ChildItem \"$env:USERPROFILE\\\\.claude\" -Directory | Select-Object -ExpandProperty Name)",
+      "PowerShell($sp = \"C:\\\\Users\\\\hp\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-hp-Desktop-gaziOyun\\\\f380e41f-6e4c-440d-b8bd-fcce0f3bc56b\\\\scratchpad\"; git clone --depth 1 https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git \"$sp\\\\uiux\" 2>&1 | Select-Object -Last 5)",
+      "PowerShell(try { \"node: $\\(node --version\\)\" } catch { \"node yok\" }; try { \"npm : $\\(npm --version\\)\" } catch { \"npm yok\" })"
+    ]
+  }
+}

@@ -5,11 +5,14 @@
 import type {
   AppUser,
   Buzz,
+  Catch,
+  SessionSecret,
+  SurveyResponse,
   Lesson,
   LiveSession,
   Participant,
   SessionRating,
-  StudentNote,
+
 } from './types'
 import { demoLesson } from './seed'
 
@@ -23,8 +26,11 @@ const K = {
   live: 'hy.live.sessions',
   parts: 'hy.live.participants',
   buzzes: 'hy.live.buzzes', // Eski mod (geçiş dönemi)
-  notes: 'hy.live.notes', // Yeni mod
+  notes: 'hy.live.notes', // Eski not yazma modu (kaldırıldı)
+  secrets: 'hy.live.secrets', // Metin + hatalar (hocaya özel)
+  catches: 'hy.live.catches',
   ratings: 'hy.live.ratings',
+  surveys: 'hy.live.surveys',
   /** Bu sekmedeki öğrencinin katılımı — { sessionId, participantId } */
   meParticipant: 'hy.live.me',
 }
@@ -129,11 +135,26 @@ export const putBuzz = (b: Buzz) => {
   write(K.buzzes, list)
 }
 
-export const getStudentNotes = () => read<StudentNote[]>(K.notes, [])
-export const putStudentNote = (n: StudentNote) => {
-  const list = getStudentNotes().filter((x) => x.id !== n.id)
-  list.push(n)
-  write(K.notes, list)
+/** Metin + hatalar — Firebase modunda yalnızca hocanın okuyabildiği doküman */
+export const getSessionSecrets = () => read<SessionSecret[]>(K.secrets, [])
+export const putSessionSecret = (s: SessionSecret) => {
+  const list = getSessionSecrets().filter((x) => x.sessionId !== s.sessionId)
+  list.push(s)
+  write(K.secrets, list)
+}
+
+export const getCatches = () => read<Catch[]>(K.catches, [])
+export const putCatch = (c: Catch) => {
+  const list = getCatches().filter((x) => x.id !== c.id)
+  list.push(c)
+  write(K.catches, list)
+}
+
+export const getSurveys = () => read<SurveyResponse[]>(K.surveys, [])
+export const putSurvey = (r: SurveyResponse) => {
+  const list = getSurveys().filter((x) => x.id !== r.id)
+  list.push(r)
+  write(K.surveys, list)
 }
 
 export const getRatings = () => read<SessionRating[]>(K.ratings, [])

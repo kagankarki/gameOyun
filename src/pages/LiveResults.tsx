@@ -16,12 +16,15 @@ import { RatingSummary } from '@/components/Rating'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
 import type {
+  Catch,
   Lesson,
   LiveSession,
   Participant,
   SessionRating,
-  StudentNote,
+  SessionSecret,
+  SurveyResponse,
 } from '@/lib/types'
+import { altBoyutOrtalamalari } from '@/lib/survey'
 import { cx, fmtDate, initials, scoreTone } from '@/lib/utils'
 
 export default function LiveResults() {
@@ -31,7 +34,9 @@ export default function LiveResults() {
   const [lesson, setLesson] = useState<Lesson | null>(null)
   const [sessions, setSessions] = useState<LiveSession[]>([])
   const [participants, setParticipants] = useState<Participant[]>([])
-  const [notes, setNotes] = useState<StudentNote[]>([])
+  const [catches, setCatches] = useState<Catch[]>([])
+  const [secret, setSecret] = useState<SessionSecret | null>(null)
+  const [surveys, setSurveys] = useState<SurveyResponse[]>([])
   const [ratings, setRatings] = useState<SessionRating[]>([])
   const [pickedId, setPickedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -58,25 +63,36 @@ export default function LiveResults() {
   useEffect(() => {
     if (!picked) return
     const a = ses.watchParticipants(picked.id, setParticipants)
-    const b = ses.watchStudentNotes(picked.id, setNotes)
+    const b = ses.watchCatches(picked.id, setCatches)
     const c = ses.watchRatings(picked.id, setRatings)
+    const d = ses.watchSessionSecret(picked.id, setSecret)
+    const e = ses.watchSurveys(picked.id, setSurveys)
     return () => {
       a()
       b()
       c()
+      d()
+      e()
     }
   }, [picked?.id])
 
-  /** Yanlış parça bazlı: kaç kişi doğru yakaladı? */
+  /** Hata bazlı: kaçı yakaladı, ek soruyu kaçı bildi? */
   const perWrong = useMemo(() => {
-    if (!picked) return []
-    return picked.wrongBlocks.map((w) => {
-      const forBlock = notes.filter((n) => n.blockIndex === w.blockIndex)
-      const valid = forBlock.filter((n) => n.status === 'valid').length
-      const pct = participants.length ? Math.round((valid / participants.length) * 100) : 0
-      return { wrong: w, wrote: forBlock.length, valid, pct }
+    const wrongs = secret?.wrongBlocks ?? []
+    return wrongs.map((w, i) => {
+      const hits = catches.filter((c) => c.status === 'hit' && c.wrongIndex === i)
+      const cevaplanan = hits.filter((c) => c.answerCorrect !== undefined)
+      const dogru = cevaplanan.filter((c) => c.answerCorrect).length
+      const pct = participants.length ? Math.round((hits.length / participants.length) * 100) : 0
+      return { wrong: w, valid: hits.length, pct, cevaplanan: cevaplanan.length, dogru }
     })
-  }, [picked, notes, participants])
+  }, [secret, catches, participants])
+
+  /** Anket alt boyut ortalamaları — araştırmacı için */
+  const boyutlar = useMemo(
+    () => (surveys.length ? altBoyutOrtalamalari(surveys.map((s) => s.likert)) : []),
+    [surveys],
+  )
 
   const summary = useMemo(() => {
     const hits = participants.reduce((s, p) => s + p.hits, 0)
@@ -177,7 +193,7 @@ export default function LiveResults() {
             {(
               [
                 ['KATILAN ÖĞRENCİ', summary.students],
-                ['GİZLİ HATA', picked.wrongBlocks.length],
+                ['GİZLİ HATA', picked.wrongCount],
                 ['ORTALAMA PUAN', summary.avg],
                 ['HATA YAKALAMA', `%${summary.rate}`],
               ] as const
@@ -204,24 +220,26 @@ export default function LiveResults() {
               </div>
             ) : (
               <div className="space-y-3">
-                {perWrong.map(({ wrong, wrote, valid, pct }) => (
-                  <div key={wrong.blockIndex} className="file-card-tabbed border-l-mark p-5">
+                {perWrong.map(({ wrong, valid, pct, cevaplanan, dogru }, i) => (
+                  <div key={i} className="file-card-tabbed border-l-mark p-5">
                     <div className="mb-3 flex flex-wrap items-center gap-3">
                       <span className="font-mono text-[11px] font-medium text-ink-faint">
-                        PARÇA {String(wrong.blockIndex + 1).padStart(2, '0')}
+                        HATA {String(i + 1).padStart(2, '0')}
                       </span>
                       <span className="label-chip border-mark-edge bg-mark-soft text-mark">
                         {wrong.points ?? 100} PUAN
                       </span>
+                      {cevaplanan > 0 && (
+                        <span className="label-chip border-verify-edge bg-verify-soft text-verify">
+                          EK SORU: {dogru}/{cevaplanan} DOĞRU
+                        </span>
+                      )}
                       <span className="ml-auto font-mono text-sm">
                         <span className={cx('font-bold', scoreTone(pct))}>{valid}</span>
                         <span className="text-ink-muted">
                           {' '}
                           / {participants.length} kişi · %{pct}
                         </span>
-                        {wrote > valid && (
-                          <span className="text-ink-faint"> · {wrote - valid} hatalı not</span>
-                        )}
                       </span>
                     </div>
 
@@ -335,6 +353,57 @@ export default function LiveResults() {
           </section>
 
           <RatingSummary ratings={ratings} />
+
+          {/* Araştırma anketi — alt boyut ortalamaları */}
+          <section className="mt-8">
+            <div className="file-card p-6">
+              <div className="flex flex-wrap items-baseline justify-between gap-3">
+                <div>
+                  <p className="label font-bold">ARAŞTIRMA ANKETİ</p>
+                  <p className="mt-1 text-xs text-ink-muted">
+                    Alt boyut ortalamaları (1–5) · ters maddeler çevrilmiş
+                  </p>
+                </div>
+                <span className="label">{surveys.length} YANIT</span>
+              </div>
+
+              {surveys.length === 0 ? (
+                <p className="py-8 text-center text-sm text-ink-muted">
+                  Henüz anket yanıtı yok.
+                </p>
+              ) : (
+                <>
+                  <div className="mt-5 space-y-2">
+                    {boyutlar.map((b) => (
+                      <div key={b.kod} className="flex items-center gap-3">
+                        <span className="w-5 shrink-0 font-mono text-xs font-bold text-ink-muted">
+                          {b.kod}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                          {b.baslik}
+                        </span>
+                        <div className="hidden h-2 w-24 shrink-0 overflow-hidden rounded-sm bg-paper-deep sm:block">
+                          <div
+                            className="h-full bg-verify"
+                            style={{ width: `${(b.ortalama / 5) * 100}%` }}
+                          />
+                        </div>
+                        <span className="w-10 shrink-0 text-right font-display font-bold text-ink">
+                          {b.ortalama.toFixed(2)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <p className="mt-5 rounded-sm bg-paper-deep p-3 text-xs leading-relaxed text-ink-muted">
+                    Alt boyutlar ayrı değerlendirilir; faktör yapısı doğrulanmadan tek bir
+                    “anket puanı” üretilmesi önerilmez. Bu sayılar algısal ikincil sonuçtur —
+                    hata tespit doğruluğu ve reaksiyon süresinin yerine geçmez.
+                  </p>
+                </>
+              )}
+            </div>
+          </section>
         </>
       )}
     </motion.div>

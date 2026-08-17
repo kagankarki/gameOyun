@@ -1,15 +1,16 @@
 /**
- * Amfi 2.0 — Hoca / projeksiyon ekranı
+ * Amfi — HOCA / PROJEKSİYON EKRANI
  * Yol: /hoca/amfi-host-v2/:lessonId?sessionId=...
  *
- * Akış (Amfi 1.0 ile aynı otomatiklik):
- *   lobi → TTS parçayı okur (`speaking`) → okuma biter, yazma toleransı
- *   (`grace`) → bölüm KENDİLİĞİNDEN kapanır (`reveal`) → sonraki parça.
+ * Metin PARÇALARA BÖLÜNMEZ: tek seferde, kesintisiz okunur. Öğrenci
+ * istediği an "HATA VAR"a basar ve yalnızca bir zaman damgası gönderir.
  *
- * Gelen notlar beklemeye alınmaz: her not düştüğü anda Gemini'ye gider,
- * puan aynı saniyede öğrencinin telefonuna yansır. Doğrulamayı yalnızca
- * bu cihaz yapar — 150 telefon kendi puanını yazsa hem tutarsız olurdu
- * hem de Firestore kuralları buna izin vermiyor.
+ * "Hangi hataya bastı?" sorusunu bu ekran cevaplar: TTS okurken her
+ * kelimede `onboundary` tetikleniyor ve metindeki karakter konumunu
+ * veriyor. Bu (an, konum) çiftlerini burada biriktirip, basış anını
+ * geriye dönük metindeki yere çeviriyoruz. Çizelge Firestore'a yazılmaz —
+ * saniyede birkaç kelime × 150 öğrenci gereksiz yazma olurdu ve zaten
+ * puanlamayı da bu cihaz yapıyor.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
@@ -23,9 +24,19 @@ import { useToast } from '@/components/Toast'
 import { useAuth } from '@/context/AuthContext'
 import * as ses from '@/lib/session'
 import { cancelSpeech, getTurkishVoice, isSpeechSupported, speak } from '@/lib/speech'
-import type { LiveSession, Participant, SessionRating, StudentNote } from '@/lib/types'
+import type {
+  Catch,
+  LiveSession,
+  Participant,
+  SessionRating,
+  SessionSecret,
+} from '@/lib/types'
 import { cx, initials } from '@/lib/utils'
 import { EASE } from '@/lib/motion'
+
+/** Perdede metnin okunan kısmından ne kadarını gösterelim */
+const GORUNEN_ONCE = 260
+const GORUNEN_SONRA = 420
 
 export default function AmfiHostV2() {
   const { lessonId } = useParams()
@@ -35,38 +46,38 @@ export default function AmfiHostV2() {
   const { user } = useAuth()
 
   const [session, setSession] = useState<LiveSession | null>(null)
+  const [secret, setSecret] = useState<SessionSecret | null>(null)
   const [participants, setParticipants] = useState<Participant[]>([])
-  const [notes, setNotes] = useState<StudentNote[]>([])
+  const [catches, setCatches] = useState<Catch[]>([])
   const [ratings, setRatings] = useState<SessionRating[]>([])
   const [qr, setQr] = useState('')
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null)
   const [voiceError, setVoiceError] = useState<string | null>(null)
-  const [highlight, setHighlight] = useState(-1)
-  const [graceLeft, setGraceLeft] = useState(0)
+  const [charIndex, setCharIndex] = useState(0)
   const [loading, setLoading] = useState(true)
 
   /* Kapanışlarda bayatlamasın diye canlı referanslar */
   const sessionRef = useRef<LiveSession | null>(null)
+  const secretRef = useRef<SessionSecret | null>(null)
   const partsRef = useRef<Participant[]>([])
-  const notesRef = useRef<StudentNote[]>([])
+  const catchesRef = useRef<Catch[]>([])
   const speakRef = useRef<{ cancel: () => void } | null>(null)
-  const startedAtRef = useRef(0)
-  const durationRef = useRef(0)
-  const graceTimer = useRef<number | undefined>(undefined)
 
-  /** Bir kez işlenen not tekrar Gemini'ye gitmesin */
-  const seenNotes = useRef(new Set<string>())
-  /** Notlar SIRAYLA işlenir — paralel gitse aynı öğrencinin puanı ezilirdi */
+  /** (an, karakter) çizelgesi — basışları metne eşlemek için */
+  const marksRef = useRef<ses.SpeechMark[]>([])
+  /** Bir kez işlenen basış tekrar puanlanmasın */
+  const seen = useRef(new Set<string>())
+  /** Cevabı bir kez notlansın */
+  const graded = useRef(new Set<string>())
+  /** Sırayla işle — paralel giderse aynı öğrencinin puanı ezilir */
   const queue = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => void (sessionRef.current = session), [session])
+  useEffect(() => void (secretRef.current = secret), [secret])
   useEffect(() => void (partsRef.current = participants), [participants])
-  useEffect(() => void (notesRef.current = notes), [notes])
+  useEffect(() => void (catchesRef.current = catches), [catches])
 
-  /* ── Oturumu bul ──
-     URL'de sessionId var (AmfiSetup öyle yönlendiriyor). Hoca adres
-     çubuğunu kaybederse bu ders için açık bir 2.0 oturumu arayıp
-     kaldığı yerden devam ederiz — 150 öğrenciyi yeniden bağlatmamak için. */
+  /* ── Oturumu bul ── */
   const sessionIdParam = searchParams.get('sessionId')
   const [sessionId, setSessionId] = useState<string | null>(sessionIdParam)
 
@@ -90,23 +101,24 @@ export default function AmfiHostV2() {
   /* ── Canlı dinleyiciler ── */
   useEffect(() => {
     if (!sessionId) return
-    const unsub = ses.watchSession(sessionId, (s) => {
+    return ses.watchSession(sessionId, (s) => {
       setSession(s)
       sessionRef.current = s
       setLoading(false)
     })
-    return unsub
   }, [sessionId])
 
   useEffect(() => {
     if (!sessionId) return
     const a = ses.watchParticipants(sessionId, setParticipants)
-    const b = ses.watchStudentNotes(sessionId, setNotes)
+    const b = ses.watchCatches(sessionId, setCatches)
     const c = ses.watchRatings(sessionId, setRatings)
+    const d = ses.watchSessionSecret(sessionId, setSecret)
     return () => {
       a()
       b()
       c()
+      d()
     }
   }, [sessionId])
 
@@ -118,6 +130,11 @@ export default function AmfiHostV2() {
     }
     getTurkishVoice().then((v) => {
       if (v) setVoice(v)
+      else
+        setVoiceError(
+          'Sistemde Türkçe ses paketi yok. Windows → Ayarlar → Zaman ve Dil → Konuşma ' +
+            'bölümünden Türkçe sesi yükleyip tarayıcıyı yeniden başlat.',
+        )
     })
   }, [])
 
@@ -126,150 +143,130 @@ export default function AmfiHostV2() {
     () => () => {
       speakRef.current?.cancel()
       cancelSpeech()
-      if (graceTimer.current) clearTimeout(graceTimer.current)
     },
     [],
   )
 
-  /* ── Bölümü kapat ve puanla ──
-     Bekleyen Gemini doğrulamaları bitmeden kapatmıyoruz; aksi hâlde
-     "kaçırdı" damgası daha not işlenmeden basılırdı. */
-  const closeBlock = useCallback(async () => {
+  /* ── Okumayı başlat ── */
+  const basla = useCallback(() => {
     const s = sessionRef.current
-    if (!s || s.phase === 'reveal' || s.phase === 'ended') return
-
-    await queue.current
-    await ses.markMisses(s, partsRef.current, notesRef.current)
-    await ses.saveSession({
-      ...sessionRef.current!,
-      phase: 'reveal',
-      blockDurationMs: durationRef.current || s.blockDurationMs,
-      graceEndsAt: 0,
-    })
-  }, [])
-
-  /* ── Bir parçayı sahneye al ── */
-  const runSegment = useCallback(
-    (index: number) => {
-      const s = sessionRef.current
-      if (!s) return
-      const text = s.segments[index]
-      if (!text) return
-
-      if (graceTimer.current) clearTimeout(graceTimer.current)
-      speakRef.current?.cancel()
-      setHighlight(-1)
-      durationRef.current = 0
-
-      const open = (startedAt: number) =>
-        ses.saveSession({
-          ...sessionRef.current!,
-          phase: 'speaking',
-          currentBlockIndex: index,
-          blockStartedAt: startedAt,
-          blockDurationMs: 0,
-          blockEstimateMs: ses.estimateReadMs(text),
-          graceEndsAt: 0,
-        })
-
-      /* Sessiz mod: ses yok, pencereyi hoca kapatır */
-      if (s.mode === 'quiz') {
-        startedAtRef.current = Date.now()
-        void open(startedAtRef.current)
-        return
-      }
-
-      speakRef.current = speak(text, voice, {
-        onStart: () => {
-          // Pencere TAM BURADA açılır — speak() çağrısıyla ses arasında
-          // ~1 sn gecikme var, hız bonusu oradan bozulurdu.
-          startedAtRef.current = Date.now()
-          void open(startedAtRef.current)
-        },
-        onBoundary: setHighlight,
-        onEnd: async () => {
-          const dur = Date.now() - startedAtRef.current
-          durationRef.current = dur
-          const endsAt = Date.now() + ses.NOTE_GRACE_MS
-          await ses.saveSession({
-            ...sessionRef.current!,
-            phase: 'grace',
-            blockDurationMs: dur,
-            graceEndsAt: endsAt,
-          })
-          // Cümlenin sonundaki hatayı duyup NOT YAZMAK zaman alır —
-          // 1.0'daki 1,5 sn'lik zil toleransı burada yetmiyor.
-          graceTimer.current = window.setTimeout(closeBlock, ses.NOTE_GRACE_MS)
-        },
-        onError: (m) => toast(m, 'error'),
-      })
-    },
-    [voice, closeBlock, toast],
-  )
-
-  /* ── Gelen notları anında doğrula + puanla ── */
-  useEffect(() => {
-    const s = sessionRef.current
-    if (!s || s.phase === 'lobby') return
-
-    const pending = notes.filter((n) => n.status === 'pending' && !seenNotes.current.has(n.id))
-    if (!pending.length) return
-
-    for (const note of pending) {
-      seenNotes.current.add(note.id)
-      queue.current = queue.current.then(async () => {
-        const cur = sessionRef.current
-        if (!cur) return
-        try {
-          await ses.resolveNote(cur, note, partsRef.current)
-        } catch (err) {
-          console.error('[amfi] not işlenemedi:', err)
-          seenNotes.current.delete(note.id) // sonraki turda tekrar denensin
-        }
-      })
-    }
-  }, [notes])
-
-  /* ── Tolerans geri sayımı ── */
-  useEffect(() => {
-    if (session?.phase !== 'grace' || !session.graceEndsAt) {
-      setGraceLeft(0)
-      return
-    }
-    const tick = () =>
-      setGraceLeft(Math.max(0, Math.ceil((session.graceEndsAt - Date.now()) / 1000)))
-    tick()
-    const t = window.setInterval(tick, 250)
-    return () => clearInterval(t)
-  }, [session?.phase, session?.graceEndsAt])
-
-  /* ── Kontroller ── */
-  const startLesson = () => {
+    const sec = secretRef.current
+    if (!s || !sec?.script) return
     if (!participants.length) {
       toast('Henüz kimse katılmadı.', 'error')
       return
     }
-    // İlk speak() kullanıcı tıklamasının içinde olmalı — tarayıcı ses izni
-    runSegment(0)
-  }
 
-  const nextSegment = () => {
+    marksRef.current = []
+    setCharIndex(0)
+
+    speakRef.current = speak(sec.script, voice, {
+      onStart: () => {
+        // Pencere TAM BURADA açılır — speak() ile ses arasında ~1 sn var
+        const t = Date.now()
+        marksRef.current = [{ t, i: 0 }]
+        void ses.saveSession({
+          ...sessionRef.current!,
+          phase: 'speaking',
+          blockStartedAt: t,
+          blockDurationMs: 0,
+        })
+      },
+      onBoundary: (i) => {
+        marksRef.current.push({ t: Date.now(), i })
+        setCharIndex(i)
+      },
+      onEnd: async () => {
+        const s2 = sessionRef.current
+        if (!s2) return
+        // Okuma bitti ama son hatanın penceresi hâlâ açık olabilir —
+        // basışlar işlensin diye biraz bekleyip bitiriyoruz.
+        await ses.saveSession({
+          ...s2,
+          phase: 'grace',
+          blockDurationMs: Date.now() - s2.blockStartedAt,
+        })
+      },
+      onError: (m) => toast(m, 'error'),
+    })
+  }, [participants.length, voice, toast])
+
+  /* ── Gelen basışları çöz ── */
+  useEffect(() => {
     const s = sessionRef.current
-    if (!s) return
-    const next = s.currentBlockIndex + 1
-    if (next >= s.segments.length) {
-      void ses.saveSession({ ...s, phase: 'ended', graceEndsAt: 0 })
-      return
-    }
-    runSegment(next)
-  }
+    if (!s || s.phase === 'lobby') return
+    const sec = secretRef.current
+    if (!sec) return
 
-  const endNow = async () => {
+    const bekleyen = catches.filter((c) => c.status === 'pending' && !seen.current.has(c.id))
+    for (const c of bekleyen) {
+      seen.current.add(c.id)
+      queue.current = queue.current.then(async () => {
+        const gizli = secretRef.current
+        if (!gizli) return
+        try {
+          // Aynı öğrenci aynı hataya iki kez puan almasın
+          const oncekiler = new Set(
+            catchesRef.current
+              .filter(
+                (x) =>
+                  x.participantId === c.participantId &&
+                  x.status === 'hit' &&
+                  x.wrongIndex !== undefined,
+              )
+              .map((x) => x.wrongIndex as number),
+          )
+          await ses.resolveCatch(
+            c,
+            marksRef.current,
+            gizli.wrongBlocks,
+            partsRef.current,
+            oncekiler,
+          )
+        } catch (err) {
+          console.error('[amfi] basış çözülemedi:', err)
+          seen.current.delete(c.id)
+        }
+      })
+    }
+  }, [catches])
+
+  /* ── Gelen cevapları notla ── */
+  useEffect(() => {
+    const sec = secretRef.current
+    if (!sec) return
+
+    const cevaplilar = catches.filter(
+      (c) =>
+        c.status === 'hit' &&
+        c.answerIndex !== undefined &&
+        c.answerCorrect === undefined &&
+        !graded.current.has(c.id),
+    )
+    for (const c of cevaplilar) {
+      graded.current.add(c.id)
+      queue.current = queue.current.then(async () => {
+        const gizli = secretRef.current
+        if (!gizli) return
+        try {
+          await ses.gradeAnswer(c, gizli.wrongBlocks, partsRef.current)
+        } catch (err) {
+          console.error('[amfi] cevap notlanamadı:', err)
+          graded.current.delete(c.id)
+        }
+      })
+    }
+  }, [catches])
+
+  const bitir = async () => {
     if (!window.confirm('Dersi bitirmek istediğine emin misin?')) return
     speakRef.current?.cancel()
-    if (graceTimer.current) clearTimeout(graceTimer.current)
+    cancelSpeech()
     const s = sessionRef.current
-    if (s) await ses.saveSession({ ...s, phase: 'ended', graceEndsAt: 0 })
+    if (!s) return
+    await queue.current
+    await ses.markMissedWrongs(s.wrongCount, partsRef.current, catchesRef.current)
+    await ses.saveSession({ ...sessionRef.current!, phase: 'ended' })
   }
 
   /* ── QR ── */
@@ -282,16 +279,17 @@ export default function AmfiHostV2() {
   }, [session?.code])
 
   /* ── Türetilenler ── */
-  const currentText = session?.segments[session.currentBlockIndex] ?? ''
-  const currentWrong = useMemo(
-    () => session?.wrongBlocks.find((w) => w.blockIndex === session.currentBlockIndex) ?? null,
-    [session?.wrongBlocks, session?.currentBlockIndex],
+  const script = secret?.script ?? ''
+  const wrongs = secret?.wrongBlocks ?? []
+
+  /** Şu an okunan yerin yakınındaki hata (yalnızca hoca görür) */
+  const yakinHata = useMemo(
+    () => wrongs.find((w) => charIndex >= w.start - 40 && charIndex <= w.end + 120) ?? null,
+    [wrongs, charIndex],
   )
-  const notesThisBlock = useMemo(
-    () => notes.filter((n) => n.blockIndex === session?.currentBlockIndex),
-    [notes, session?.currentBlockIndex],
-  )
-  const validCount = notesThisBlock.filter((n) => n.status === 'valid').length
+
+  const hits = catches.filter((c) => c.status === 'hit')
+  const yakalananHatalar = new Set(hits.map((c) => c.wrongIndex))
 
   if (loading) return <Loader label="Oturum yükleniyor…" />
 
@@ -301,9 +299,9 @@ export default function AmfiHostV2() {
         <div className="file-card p-10 text-center">
           <p className="label">OTURUM BULUNAMADI</p>
           <p className="mt-3 text-sm text-ink-muted">
-            Bu ders için açık bir Amfi 2.0 oturumu yok. Yeniden hazırlaman gerekiyor.
+            Bu ders için açık bir amfi oturumu yok.
           </p>
-          <div className="mt-6 flex justify-center gap-3">
+          <div className="mt-6 flex flex-wrap justify-center gap-3">
             <Button3D onClick={() => nav(`/hoca/amfi-setup/${lessonId}`)}>Oyunu Hazırla</Button3D>
             <Button3D tone="ghost" onClick={() => nav('/hoca')}>
               Panele Dön
@@ -319,16 +317,15 @@ export default function AmfiHostV2() {
   if (session.phase === 'lobby') {
     return (
       <div className="mx-auto max-w-6xl px-5 py-10 sm:px-6">
-        <p className="label">AMFİ 2.0 OTURUMU · NOT YAZMA</p>
+        <p className="label">AMFİ OTURUMU · KESİNTİSİZ OKUMA</p>
         <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
           {session.lessonTitle}
         </h1>
         <div className="rule mt-7" />
 
-        {session.mode === 'capture' && voiceError && (
+        {voiceError && (
           <div className="mt-6 rounded-sm border-l-2 border-mark bg-mark-soft p-4 text-sm leading-relaxed text-ink">
-            <strong className="font-semibold">Ses sorunu:</strong> {voiceError} Sessiz modda
-            oynatmak istersen oyunu yeniden hazırlayıp “Sessiz Mod”u seç.
+            <strong className="font-semibold">Ses sorunu:</strong> {voiceError}
           </div>
         )}
 
@@ -346,9 +343,6 @@ export default function AmfiHostV2() {
               />
             )}
             <p className="mt-5 break-all font-mono text-[11px] text-ink-muted">{joinUrl}</p>
-            <p className="mt-4 text-xs leading-relaxed text-ink-muted">
-              Öğrenciler QR'ı okutur ya da bu kodu girer. Hesap açmaları gerekmez.
-            </p>
           </div>
 
           <div className="file-card flex flex-col p-7">
@@ -379,25 +373,27 @@ export default function AmfiHostV2() {
               </div>
             )}
 
-            <div className="mt-6 grid grid-cols-2 gap-px overflow-hidden rounded-sm border border-paper-edge bg-paper-edge">
+            <div className="mt-6 grid grid-cols-3 gap-px overflow-hidden rounded-sm border border-paper-edge bg-paper-edge">
               <div className="bg-paper-card p-3 text-center">
-                <p className="font-display text-xl font-bold text-ink">{session.segments.length}</p>
-                <p className="label mt-0.5">PARÇA</p>
+                <p className="font-display text-xl font-bold text-mark">{session.wrongCount}</p>
+                <p className="label mt-0.5">GİZLİ HATA</p>
               </div>
               <div className="bg-paper-card p-3 text-center">
-                <p className="font-display text-xl font-bold text-mark">
-                  {session.wrongBlocks.length}
+                <p className="font-display text-xl font-bold text-verify">
+                  {wrongs.filter((w) => w.followUp).length}
                 </p>
-                <p className="label mt-0.5">GİZLİ HATA</p>
+                <p className="label mt-0.5">EK SORU</p>
+              </div>
+              <div className="bg-paper-card p-3 text-center">
+                <p className="font-display text-xl font-bold text-ink">
+                  ~{Math.max(1, Math.round(session.blockEstimateMs / 60000))}
+                </p>
+                <p className="label mt-0.5">DAKİKA</p>
               </div>
             </div>
 
             <div className="mt-auto flex flex-wrap gap-3 pt-8">
-              <Button3D
-                size="lg"
-                onClick={startLesson}
-                disabled={session.mode === 'capture' && !!voiceError}
-              >
+              <Button3D size="lg" onClick={basla} disabled={!!voiceError || !script}>
                 Dersi Başlat
               </Button3D>
               <Button3D size="lg" tone="ghost" onClick={() => nav('/hoca')}>
@@ -419,7 +415,6 @@ export default function AmfiHostV2() {
             <span className="label">OTURUM RAPORU</span>
             <span className="label ml-auto">{session.code}</span>
           </div>
-
           <div className="p-8 text-center">
             <span className="stamp-verify animate-stamp">DERS BİTTİ</span>
             <h1 className="mt-6 font-display text-3xl font-bold text-ink">
@@ -427,7 +422,6 @@ export default function AmfiHostV2() {
             </h1>
             <p className="mt-2 text-sm text-ink-muted">{participants.length} katılımcı</p>
           </div>
-
           <div className="border-t border-paper-edge">
             {participants.map((p, i) => (
               <div
@@ -441,8 +435,8 @@ export default function AmfiHostV2() {
                   {initials(p.name)}
                 </div>
                 <p className="flex-1 truncate font-semibold text-ink">{p.name}</p>
-                <span className="font-mono text-sm text-verify">{p.hits} doğru</span>
-                <span className="font-mono text-sm text-mark">{p.falseAlarms} yanlış</span>
+                <span className="font-mono text-sm text-verify">{p.hits} yakaladı</span>
+                <span className="font-mono text-sm text-mark">{p.falseAlarms} boş</span>
                 <span className="w-16 text-right font-display text-lg font-bold text-ink">
                   {p.score}
                 </span>
@@ -453,36 +447,32 @@ export default function AmfiHostV2() {
 
         <RatingSummary ratings={ratings} />
 
-        <div className="flex justify-center">
-          <Button3D onClick={() => nav('/hoca')}>Panele Dön</Button3D>
+        <div className="flex flex-wrap justify-center gap-3">
+          <Button3D onClick={() => nav(`/hoca/sonuclar/${lessonId}`)}>Ayrıntılı Rapor</Button3D>
+          <Button3D tone="ghost" onClick={() => nav('/hoca')}>
+            Panele Dön
+          </Button3D>
         </div>
       </div>
     )
   }
 
-  /* ══════════════ ANLATIM ══════════════ */
-  const revealing = session.phase === 'reveal'
-  const windowOpen = session.phase === 'speaking' || session.phase === 'grace'
-  const isLast = session.currentBlockIndex + 1 >= session.segments.length
+  /* ══════════════ OKUMA ══════════════ */
+  const okunan = script.slice(Math.max(0, charIndex - GORUNEN_ONCE), charIndex)
+  const suAn = script.slice(charIndex).split(' ')[0] ?? ''
+  const gelecek = script.slice(charIndex + suAn.length, charIndex + GORUNEN_SONRA)
+  const ilerleme = session.scriptLength ? Math.round((charIndex / session.scriptLength) * 100) : 0
+  const bitiyor = session.phase === 'grace'
 
   return (
     <div className="mx-auto max-w-7xl px-5 py-8 sm:px-6">
       {/* Künye */}
       <div className="file-card mb-5 flex flex-wrap items-center gap-x-6 gap-y-2 px-5 py-3">
-        <div>
+        <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{session.lessonTitle}</p>
           <p className="label mt-0.5">KOD {session.code}</p>
         </div>
         <div className="ml-auto flex items-center gap-6">
-          <div className="text-right">
-            <p className="font-mono text-sm font-medium text-ink">
-              {String(session.currentBlockIndex + 1).padStart(2, '0')}
-              <span className="text-ink-faint">
-                /{String(session.segments.length).padStart(2, '0')}
-              </span>
-            </p>
-            <p className="label mt-0.5">PARÇA</p>
-          </div>
           <div className="text-right">
             <p className="font-display text-xl font-bold leading-none text-ink">
               {participants.length}
@@ -490,177 +480,117 @@ export default function AmfiHostV2() {
             <p className="label mt-1">KATILIMCI</p>
           </div>
           <div className="text-right">
-            <p
-              className={cx(
-                'font-display text-xl font-bold leading-none',
-                windowOpen ? 'text-mark' : 'text-ink-faint',
-              )}
-            >
-              {notesThisBlock.length}
+            <p className="font-display text-xl font-bold leading-none text-verify">
+              {yakalananHatalar.size}
+              <span className="text-ink-faint">/{session.wrongCount}</span>
             </p>
-            <p className="label mt-1">NOT</p>
+            <p className="label mt-1">YAKALANAN</p>
+          </div>
+          <div className="text-right">
+            <p className="font-display text-xl font-bold leading-none text-mark">{hits.length}</p>
+            <p className="label mt-1">BASIŞ</p>
           </div>
         </div>
       </div>
 
-      {/* Durum şeridi */}
-      <div
-        className={cx(
-          'mb-5 flex items-center gap-3 rounded-sm border-l-4 px-5 py-3 font-mono text-xs font-bold uppercase tracking-[0.16em]',
-          session.phase === 'speaking' && 'border-l-mark bg-mark-soft text-mark',
-          session.phase === 'grace' && 'border-l-flag bg-flag-soft text-flag',
-          revealing && 'border-l-ink bg-paper-deep text-ink',
-        )}
-      >
-        <span>
-          {session.phase === 'speaking' &&
-            (session.mode === 'quiz' ? '● PENCERE AÇIK — NOT ALINIYOR' : '● OKUNUYOR — NOT ALINIYOR')}
-          {session.phase === 'grace' && '● SON SANİYELER'}
-          {revealing && '■ BÖLÜM KAPANDI'}
-        </span>
-        {session.phase === 'grace' && graceLeft > 0 && (
-          <span className="ml-auto text-base">{graceLeft} sn</span>
-        )}
+      {/* İlerleme */}
+      <div className="mb-5">
+        <div className="h-2 overflow-hidden rounded-full bg-paper-deep">
+          <div
+            className={cx('h-full transition-all duration-300', bitiyor ? 'bg-ink' : 'bg-mark')}
+            style={{ width: `${ilerleme}%` }}
+          />
+        </div>
+        <p className="mt-2 font-mono text-[11px] font-bold uppercase tracking-[0.16em] text-ink-muted">
+          {bitiyor ? '■ OKUMA BİTTİ — SON BASIŞLAR BEKLENİYOR' : `● OKUNUYOR · %${ilerleme}`}
+        </p>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[1fr_340px]">
         <div className="space-y-5">
-          {/* Metin — amfi arkasından okunacak kadar büyük */}
-          <div
-            className={cx(
-              'file-card-tabbed p-8 sm:p-10',
-              revealing && currentWrong && 'border-l-mark',
-              revealing && !currentWrong && 'border-l-verify',
-              !revealing && 'border-l-ink',
-            )}
-          >
-            <p className="label mb-5">
-              PARÇA {String(session.currentBlockIndex + 1).padStart(2, '0')}
+          {/* Metin — okunan kelime vurgulu */}
+          <div className="file-card-tabbed border-l-ink p-8 sm:p-10">
+            <p className="font-display text-[26px] leading-[1.5] sm:text-[32px]">
+              <span className="text-ink-faint">{okunan}</span>
+              <span className="bg-flag-soft font-semibold text-ink">{suAn}</span>
+              <span className="text-ink">{gelecek}</span>
             </p>
-
-            <p
-              className={cx(
-                'font-display text-[26px] leading-[1.45] text-ink sm:text-[34px]',
-                revealing && currentWrong && 'mark-underline',
-              )}
-            >
-              {highlight >= 0 && !revealing ? (
-                <>
-                  <span>{currentText.slice(0, highlight)}</span>
-                  <span className="bg-flag-soft">
-                    {currentText.slice(highlight).split(' ')[0]}
-                  </span>
-                  <span className="text-ink-faint">
-                    {currentText.slice(highlight).split(' ').slice(1).join(' ')
-                      ? ' ' + currentText.slice(highlight).split(' ').slice(1).join(' ')
-                      : ''}
-                  </span>
-                </>
-              ) : (
-                currentText
-              )}
-            </p>
-
-            {revealing && (
-              <motion.div
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ ease: EASE }}
-                className="mt-8"
-              >
-                <div className="flex flex-wrap items-center gap-4">
-                  <span className={cx('animate-stamp', currentWrong ? 'stamp-mark' : 'stamp-verify')}>
-                    {currentWrong ? 'TUZAKTI' : 'DOĞRU BİLGİYDİ'}
-                  </span>
-                  <span className="font-mono text-sm text-ink-muted">
-                    {currentWrong
-                      ? `${validCount} / ${participants.length} kişi doğru yazdı`
-                      : `${notesThisBlock.length} kişi boşa yazdı`}
-                  </span>
-                </div>
-
-                {currentWrong && (
-                  <p className="marginalia mt-5 text-base">
-                    <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-verify">
-                      DOĞRUSU
-                    </span>
-                    <br />
-                    {currentWrong.correction || currentWrong.explanation}
-                  </p>
-                )}
-              </motion.div>
-            )}
           </div>
 
-          {/* Hocaya özel: bu parçada yakalanacak yanlış */}
-          {currentWrong && !revealing && (
-            <div className="file-card border-l-4 border-l-flag p-5">
-              <p className="label font-bold text-flag">YALNIZCA SEN GÖRÜYORSUN</p>
-              <p className="mt-2 text-sm leading-relaxed text-ink">{currentWrong.explanation}</p>
-            </div>
-          )}
+          {/* Yalnızca hocanın gördüğü uyarı */}
+          <AnimatePresence>
+            {yakinHata && (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ ease: EASE }}
+                className="file-card border-l-4 border-l-flag p-5"
+              >
+                <p className="label font-bold text-flag">ŞU AN OKUNAN HATA · YALNIZCA SEN GÖRÜYORSUN</p>
+                <p className="mt-2 font-serif text-base text-mark">“{yakinHata.text}”</p>
+                <p className="mt-1.5 text-sm leading-relaxed text-ink">{yakinHata.explanation}</p>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          {/* Gelen notlar */}
+          {/* Basış akışı */}
           <div className="file-card p-6">
-            <div className="flex items-center justify-between">
-              <p className="label font-bold">{notesThisBlock.length} NOT GELDİ</p>
-              <span className="label-chip border-verify-edge bg-verify-soft text-verify">
-                {validCount} DOĞRU
-              </span>
-            </div>
-
-            {notesThisBlock.length === 0 ? (
-              <p className="py-8 text-center text-sm text-ink-muted">Henüz not yazılmadı</p>
+            <p className="label font-bold">SON BASIŞLAR</p>
+            {catches.length === 0 ? (
+              <p className="py-8 text-center text-sm text-ink-muted">Henüz kimse basmadı</p>
             ) : (
-              <div className="mt-4 max-h-[360px] space-y-2 overflow-y-auto">
+              <div className="mt-4 max-h-[320px] space-y-2 overflow-y-auto">
                 <AnimatePresence initial={false}>
-                  {[...notesThisBlock]
-                    .sort((a, b) => a.createdAt - b.createdAt)
-                    .map((note) => {
-                      const writer = participants.find((p) => p.id === note.participantId)
+                  {[...catches]
+                    .sort((a, b) => b.flaggedAt - a.flaggedAt)
+                    .slice(0, 40)
+                    .map((c) => {
+                      const kim = participants.find((p) => p.id === c.participantId)
+                      const w =
+                        c.wrongIndex !== undefined ? wrongs[c.wrongIndex] : undefined
                       return (
                         <motion.div
-                          key={note.id}
+                          key={c.id}
                           initial={{ opacity: 0, x: -10 }}
                           animate={{ opacity: 1, x: 0 }}
                           className={cx(
-                            'rounded-sm border-l-4 px-3 py-2.5',
-                            note.status === 'valid'
+                            'flex items-center gap-3 rounded-sm border-l-4 px-3 py-2',
+                            c.status === 'hit'
                               ? 'border-l-verify bg-verify-soft'
-                              : note.status === 'invalid'
+                              : c.status === 'miss'
                                 ? 'border-l-mark bg-mark-soft'
                                 : 'border-l-paper-edge bg-paper-deep',
                           )}
                         >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-ink-muted">
-                                {writer?.name ?? '—'}
-                              </p>
-                              <p className="mt-1 text-sm text-ink">{note.text}</p>
-                              {note.geminiFeedback && (
-                                <p className="mt-1 text-xs italic text-ink-faint">
-                                  {note.geminiFeedback}
-                                </p>
-                              )}
-                            </div>
+                          <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+                            {kim?.name ?? '—'}
+                          </span>
+                          <span className="truncate font-mono text-[11px] text-ink-muted">
+                            {c.status === 'hit'
+                              ? `“${w?.text ?? '?'}”`
+                              : c.status === 'miss'
+                                ? 'boşa bastı'
+                                : 'işleniyor…'}
+                          </span>
+                          {c.answerCorrect !== undefined && (
                             <span
                               className={cx(
-                                'shrink-0 font-mono text-sm font-bold',
-                                note.status === 'valid'
-                                  ? 'text-verify'
-                                  : note.status === 'invalid'
-                                    ? 'text-mark'
-                                    : 'text-ink-muted',
+                                'font-mono text-[11px] font-bold',
+                                c.answerCorrect ? 'text-verify' : 'text-ink-faint',
                               )}
                             >
-                              {note.status === 'valid'
-                                ? '✓'
-                                : note.status === 'invalid'
-                                  ? '✗'
-                                  : '⏳'}
+                              {c.answerCorrect ? `+${c.bonus}` : 'soru ✗'}
                             </span>
-                          </div>
+                          )}
+                          <span
+                            className={cx(
+                              'w-12 shrink-0 text-right font-display font-bold',
+                              c.points > 0 ? 'text-verify' : 'text-mark',
+                            )}
+                          >
+                            {c.points > 0 ? `+${c.points}` : c.points}
+                          </span>
                         </motion.div>
                       )
                     })}
@@ -674,14 +604,8 @@ export default function AmfiHostV2() {
         <div className="file-card h-fit p-6">
           <p className="label font-bold">CANLI SIRALAMA</p>
           <div className="mt-4 space-y-1.5">
-            {participants.length === 0 && (
-              <p className="py-6 text-center text-sm text-ink-muted">Katılımcı yok</p>
-            )}
             {participants.slice(0, 12).map((p, i) => (
-              <div
-                key={p.id}
-                className="flex items-center gap-3 rounded-sm bg-paper-deep px-3 py-2"
-              >
+              <div key={p.id} className="flex items-center gap-3 rounded-sm bg-paper-deep px-3 py-2">
                 <span className="w-5 font-mono text-sm font-bold text-ink-faint">{i + 1}</span>
                 <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
                   {p.name}
@@ -693,24 +617,9 @@ export default function AmfiHostV2() {
         </div>
       </div>
 
-      {/* Kontroller */}
-      <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-        {revealing ? (
-          <Button3D size="xl" onClick={nextSegment}>
-            {isLast ? 'Dersi Bitir' : 'Sonraki Parça'}
-          </Button3D>
-        ) : session.mode === 'quiz' ? (
-          <Button3D size="xl" tone="danger" onClick={closeBlock}>
-            Bölümü Kapat
-          </Button3D>
-        ) : (
-          <p className="text-sm text-ink-muted">
-            Okuma bitince bölüm {Math.round(ses.NOTE_GRACE_MS / 1000)} sn tolerans sonrası
-            kendiliğinden kapanır…
-          </p>
-        )}
-        <Button3D tone="ghost" onClick={endNow}>
-          Dersi Sonlandır
+      <div className="mt-8 flex justify-center">
+        <Button3D size="xl" tone="danger" onClick={bitir}>
+          Dersi Bitir
         </Button3D>
       </div>
     </div>

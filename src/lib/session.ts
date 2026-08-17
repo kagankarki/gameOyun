@@ -26,37 +26,43 @@ import * as store from './store'
 import type {
   Block,
   Buzz,
+  Catch,
   LeaderRow,
   Lesson,
   LiveSession,
   LiveSessionMode,
   LiveSessionVersion,
   Participant,
+  ReadingMode,
   SessionRating,
-  StudentNote,
+  SessionSecret,
+  SurveyResponse,
   WrongBlock,
 } from './types'
 import { uid } from './utils'
-import { validateStudentNote } from './gemini'
 
 const live = () => Boolean(isFirebaseConfigured && firestore)
 
-/** Boşa basma / boşa yazma cezası */
+/** Boşa basma cezası */
 export const FALSE_ALARM_PENALTY = 40
 /** Hız bonusunun üst sınırı */
 export const MAX_SPEED_BONUS = 30
 /** Amfi 1.0: zile basmak bir saniyelik iş — kısa tolerans yeter */
 export const GRACE_MS = 1500
+
 /**
- * Amfi 2.0: öğrenci not YAZIYOR. Cümlenin sonundaki hatayı duyup bir şeyler
- * yazması 1,5 saniyede bitmez — bu yüzden ayrı ve uzun bir tolerans.
+ * Bir hata okunduktan sonra öğrencinin basabileceği süre.
+ *
+ * Sürekli okumada metin durmuyor; öğrenci hatayı duyup "dur, bu yanlıştı"
+ * diye düşünene kadar birkaç saniye geçiyor. Bu pencere kapanınca basış
+ * artık o hataya sayılmaz.
  */
-export const NOTE_GRACE_MS = 20_000
+export const CATCH_WINDOW_MS = 8_000
 
 /**
  * Türkçe TTS 1x hızda kabaca 14 karakter/sn okuyor.
- * Okuma bitmeden gelen notlara hız bonusu verebilmek için gerekli;
- * gerçek süre onEnd'de ölçülüp `blockDurationMs`e yazılıyor.
+ * Okuma bitmeden hız bonusu hesaplayabilmek için gerekli; gerçek süre
+ * onEnd'de ölçülüp `blockDurationMs`e yazılıyor.
  */
 export const estimateReadMs = (text: string) =>
   Math.max(3_000, Math.round((text.length / 14) * 1000))
@@ -77,8 +83,10 @@ function hydrate(s: LiveSession): LiveSession {
   return {
     ...s,
     version: s.version ?? 1,
+    readingMode: s.readingMode ?? 'segmented',
     segments: s.segments ?? [],
-    wrongBlocks: s.wrongBlocks ?? [],
+    wrongCount: s.wrongCount ?? 0,
+    scriptLength: s.scriptLength ?? 0,
     blockEstimateMs: s.blockEstimateMs ?? 0,
     graceEndsAt: s.graceEndsAt ?? 0,
   }
@@ -101,7 +109,10 @@ const makeCode = () =>
 export interface SessionOptions {
   mode?: LiveSessionMode
   version?: LiveSessionVersion
-  /** Amfi 2.0: sesli okunacak parçalar */
+  readingMode?: ReadingMode
+  /** Sürekli okumada metnin tamamı */
+  script?: string
+  /** Eski parça modeli */
   segments?: string[]
   wrongBlocks?: WrongBlock[]
 }
@@ -113,6 +124,9 @@ export async function createSession(
   opts: SessionOptions = {},
 ): Promise<LiveSession> {
   const now = Date.now()
+  const script = opts.script ?? ''
+  const wrongBlocks = opts.wrongBlocks ?? []
+
   const session: LiveSession = {
     id: uid('ses'),
     code: makeCode(),
@@ -123,18 +137,56 @@ export async function createSession(
     phase: 'lobby',
     mode: opts.mode ?? 'capture',
     version: opts.version ?? 1,
+    readingMode: opts.readingMode ?? 'segmented',
     segments: opts.segments ?? [],
+    // Öğrenciye yalnızca KAÇ hata olduğunu söylüyoruz, nerede olduğunu değil
+    wrongCount: wrongBlocks.length,
+    scriptLength: script.length,
     currentBlockIndex: 0,
     blockStartedAt: 0,
     blockDurationMs: 0,
-    blockEstimateMs: 0,
+    blockEstimateMs: script ? estimateReadMs(script) : 0,
     graceEndsAt: 0,
-    wrongBlocks: opts.wrongBlocks ?? [],
     createdAt: now,
     updatedAt: now,
   }
   await saveSession(session)
+  // Metin ve hatalar ayrı, hocaya özel dokümanda
+  await saveSessionSecret({ sessionId: session.id, teacherId, script, wrongBlocks })
   return session
+}
+
+/* ── Hocaya özel bölüm ─────────────────────────────────── */
+
+export async function saveSessionSecret(secret: SessionSecret): Promise<void> {
+  if (live()) {
+    await setDoc(doc(firestore!, 'sessionSecrets', secret.sessionId), secret)
+    return
+  }
+  store.putSessionSecret(secret)
+}
+
+/**
+ * Yalnızca hoca cihazı çağırır. Öğrenci çağırırsa Firestore kuralları
+ * reddeder — zaten öğrencinin ekranında bu veriye ihtiyaç yok.
+ */
+export function watchSessionSecret(
+  sessionId: string,
+  cb: (s: SessionSecret | null) => void,
+): () => void {
+  if (live()) {
+    return onSnapshot(
+      doc(firestore!, 'sessionSecrets', sessionId),
+      (snap) => cb(snap.exists() ? (snap.data() as SessionSecret) : null),
+      (err) => {
+        console.error('[sessionSecret] dinlenemedi:', err)
+        cb(null)
+      },
+    )
+  }
+  const emit = () => cb(store.getSessionSecrets().find((s) => s.sessionId === sessionId) ?? null)
+  emit()
+  return store.subscribe(emit)
 }
 
 /**
@@ -384,180 +436,293 @@ export function buildLeaderboard(participants: Participant[]): LeaderRow[] {
 }
 
 /* ══════════════════════════════════════════════════════════
-   ÖĞRENCI NOTLARI (AMFI 2.0)
-   Öğrenci yanlış bölümde not yazıyor, Gemini doğruluyor.
+   YAKALAMA (SÜREKLİ OKUMA)
+
+   Öğrenci "HATA VAR"a basar → yalnızca bir zaman damgası gönderir.
+   Hangi hataya denk geldiğini, puanını ve sorulacak soruyu HOCA cihazı
+   hesaplar. Öğrencinin telefonu metni de hataları da bilmiyor.
    ══════════════════════════════════════════════════════════ */
 
-export async function submitStudentNote(
+/** Öğrenci tarafı: bastığını bildirir, gerisini bekler. */
+export async function sendCatch(
   session: LiveSession,
   participantId: string,
-  noteText: string,
-  /** "HATA VAR"a bastığı an — verilmezse gönderim anı sayılır */
-  flaggedAt?: number,
-): Promise<StudentNote> {
+): Promise<Catch> {
   const now = Date.now()
-  const note: StudentNote = {
-    id: uid('note'),
+  const c: Catch = {
+    id: uid('catch'),
     sessionId: session.id,
     participantId,
-    blockIndex: session.currentBlockIndex,
-    text: noteText.trim(),
+    flaggedAt: now,
     status: 'pending',
-    flaggedAt: flaggedAt ?? now,
+    points: 0,
     createdAt: now,
   }
-
   if (live()) {
-    await setDoc(doc(firestore!, 'studentNotes', note.id), note)
+    await setDoc(doc(firestore!, 'catches', c.id), c)
   } else {
-    store.putStudentNote(note)
+    store.putCatch(c)
   }
-
-  return note
+  return c
 }
 
-/**
- * Gemini'ye gönder: yanlış doğru mu anlaşılmış?
- * Hoca'nın belirttiği yanlışı bulup kontrol et.
- */
-export async function validateNote(
-  session: LiveSession,
-  note: StudentNote,
-): Promise<StudentNote> {
-  const wrong = session.wrongBlocks.find((w) => w.blockIndex === note.blockIndex)
-
-  // Bu bölümde işaretlenmiş bir yanlış yok — öğrenci boşa yazmış.
-  // Gemini'ye sormaya gerek yok, doğrudan geçersiz.
-  const updated: StudentNote = wrong
-    ? await (async () => {
-        const result = await validateStudentNote(wrong.explanation, note.text)
-        return {
-          ...note,
-          status: result.valid ? ('valid' as const) : ('invalid' as const),
-          geminiFeedback: result.feedback,
-          validatedAt: Date.now(),
-        }
-      })()
-    : {
-        ...note,
-        status: 'invalid',
-        geminiFeedback: 'Bu bölümde bir yanlış yoktu.',
-        validatedAt: Date.now(),
-      }
+export function watchCatches(sessionId: string, cb: (list: Catch[]) => void): () => void {
+  const sortAsc = (a: Catch, b: Catch) => a.flaggedAt - b.flaggedAt
 
   if (live()) {
-    await setDoc(doc(firestore!, 'studentNotes', note.id), updated)
-  } else {
-    store.putStudentNote(updated)
-  }
-
-  return updated
-}
-
-export function watchStudentNotes(
-  sessionId: string,
-  cb: (list: StudentNote[]) => void,
-): () => void {
-  if (live()) {
-    const q = query(collection(firestore!, 'studentNotes'), where('sessionId', '==', sessionId))
+    const q = query(collection(firestore!, 'catches'), where('sessionId', '==', sessionId))
     return onSnapshot(
       q,
-      (snap) => cb(snap.docs.map((d) => d.data() as StudentNote)),
+      (snap) => cb(snap.docs.map((d) => d.data() as Catch).sort(sortAsc)),
       (err) => {
-        console.error('[studentNotes] dinlenemedi:', err)
+        console.error('[catches] dinlenemedi:', err)
         cb([])
       },
     )
   }
-  const emit = () =>
-    cb(store.getStudentNotes().filter((n) => n.sessionId === sessionId))
+  const emit = () => cb(store.getCatches().filter((c) => c.sessionId === sessionId).sort(sortAsc))
   emit()
   return store.subscribe(emit)
 }
 
-/* ══════════════════════════════════════════════════════════
-   PUANLAMA (AMFI 2.0)
-   Yalnızca hoca cihazı hesaplar — 150 istemci kendi hesaplasa
-   tutarsızlık çıkardı. Firestore kuralları da katılımcı puanını
-   sadece hocanın yazmasına izin veriyor.
-   ══════════════════════════════════════════════════════════ */
-
-/**
- * Ne kadar erken YAKALADIYSA o kadar bonus.
- *
- * Ölçülen an, öğrencinin butona bastığı an (`flaggedAt`) — gönderim anı
- * değil. Aksi hâlde hatayı ilk fark eden ama yavaş yazan öğrenci bonusu
- * kaybederdi; ölçtüğümüz şey yazma hızı değil, fark etme hızı.
- *
- * Okuma sürerken gerçek süre henüz bilinmediği için tahmine düşeriz;
- * bölüm kapanınca `blockDurationMs` dolar ve ölçülen süre kullanılır.
- */
-export function speedBonusFromNote(note: StudentNote, session: LiveSession): number {
-  const span = session.blockDurationMs || session.blockEstimateMs
-  if (span <= 0) return 0
-  const reactionMs = (note.flaggedAt ?? note.createdAt) - session.blockStartedAt
-  const ratio = 1 - reactionMs / span
-  return Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, ratio)))
+export async function saveCatch(c: Catch): Promise<void> {
+  if (live()) {
+    await setDoc(doc(firestore!, 'catches', c.id), c)
+    return
+  }
+  store.putCatch(c)
 }
 
-export interface NoteOutcome {
-  note: StudentNote
-  delta: number
+/* ── Zaman ↔ karakter çizelgesi ───────────────────────────
+   TTS okurken her kelimede `onboundary` tetikleniyor ve metindeki
+   karakter konumunu veriyor. Hoca cihazı bu (an, konum) çiftlerini
+   biriktirir; böylece "öğrenci saat 12:04:07'de bastığında metnin
+   neresi okunuyordu?" sorusu geriye dönük cevaplanabilir.
+
+   Bunu oturuma yazmıyoruz: saniyede birkaç kelime × 150 öğrenci =
+   Firestore'u boşuna yakardı. Zaten puanlamayı da hoca yapıyor. */
+
+export interface SpeechMark {
+  /** Duvar saati */
+  t: number
+  /** Metindeki karakter konumu */
+  i: number
+}
+
+/** Verilen anda metnin hangi karakterinde olduğumuz */
+export function charIndexAt(marks: SpeechMark[], t: number): number {
+  if (!marks.length) return 0
+  let lo = 0
+  let hi = marks.length - 1
+  if (t <= marks[0].t) return marks[0].i
+  if (t >= marks[hi].t) return marks[hi].i
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1
+    if (marks[mid].t <= t) lo = mid
+    else hi = mid
+  }
+  return marks[lo].i
+}
+
+/** Metnin verilen karakterine ilk ne zaman ulaşıldığı (yoksa null) */
+function timeAtChar(marks: SpeechMark[], charIndex: number): number | null {
+  const m = marks.find((x) => x.i >= charIndex)
+  return m ? m.t : null
 }
 
 /**
- * Bir notu Gemini'ye doğrulatır ve puanı ANINDA işler.
+ * Basış hangi hataya denk geliyor?
  *
- * Hoca ekranı bekleyen her notu buraya verir; öğrenci bölüm daha
- * kapanmadan "✓ doğru, +115" görür. Notlar sırayla işlenmeli —
- * aynı katılımcının iki notu paralel işlenirse ikincisi birincinin
- * puanını ezer.
+ * Her hata için "duyulmaya başlandığı an" ile "bitişinden CATCH_WINDOW_MS
+ * sonrası" arasında bir pencere açıyoruz. Basış bu pencerelerden birine
+ * düşerse yakalama sayılır; birden fazlasına düşerse en yenisi kazanır
+ * (öğrenci en son duyduğu şeye tepki veriyordur).
  */
-export async function resolveNote(
-  session: LiveSession,
-  note: StudentNote,
-  participants: Participant[],
-): Promise<NoteOutcome> {
-  const validated = await validateNote(session, note)
-  const p = participants.find((x) => x.id === note.participantId)
-  if (!p) return { note: validated, delta: 0 }
+export function matchWrong(
+  marks: SpeechMark[],
+  wrongBlocks: WrongBlock[],
+  flaggedAt: number,
+): number | null {
+  let best: number | null = null
+  let bestStart = -1
 
-  const wrong = session.wrongBlocks.find((w) => w.blockIndex === note.blockIndex)
-  const delta =
-    validated.status === 'valid'
-      ? (wrong?.points ?? 100) + speedBonusFromNote(validated, session)
-      : -FALSE_ALARM_PENALTY
-
-  await saveParticipant({
-    ...p,
-    score: Math.max(0, p.score + delta),
-    hits: p.hits + (delta > 0 ? 1 : 0),
-    falseAlarms: p.falseAlarms + (delta < 0 ? 1 : 0),
+  wrongBlocks.forEach((w, index) => {
+    const basladi = timeAtChar(marks, w.start)
+    if (basladi === null) return // bu hataya daha gelinmedi
+    const bitti = timeAtChar(marks, w.end) ?? basladi
+    if (flaggedAt >= basladi && flaggedAt <= bitti + CATCH_WINDOW_MS) {
+      if (basladi > bestStart) {
+        bestStart = basladi
+        best = index
+      }
+    }
   })
 
-  return { note: validated, delta }
+  return best
+}
+
+export interface CatchResolution {
+  wrongIndex: number | null
+  points: number
+  /** Hız bonusu dâhil mi — arayüzde ayrı göstermek için */
+  speedBonus: number
 }
 
 /**
- * Bölüm kapanırken hiç not yazmayanlara "kaçırdı" yazar.
- * Puan düşmez — Amfi 1.0'daki `miss` davranışıyla aynı.
+ * Bir basışı çözer: hangi hata, kaç puan, hangi soru sorulacak.
+ * Yalnızca hoca cihazı çağırır.
+ *
+ * `alreadyCaught`: bu öğrencinin daha önce yakaladığı hata sıraları —
+ * aynı hataya iki kez basıp iki kez puan almasın.
  */
-export async function markMisses(
-  session: LiveSession,
+export async function resolveCatch(
+  c: Catch,
+  marks: SpeechMark[],
+  wrongBlocks: WrongBlock[],
   participants: Participant[],
-  notes: StudentNote[],
-): Promise<number> {
-  const wrong = session.wrongBlocks.find((w) => w.blockIndex === session.currentBlockIndex)
-  if (!wrong) return 0 // Bu bölümde yakalanacak bir şey yoktu
+  alreadyCaught: Set<number>,
+): Promise<Catch> {
+  const wrongIndex = matchWrong(marks, wrongBlocks, c.flaggedAt)
+  const p = participants.find((x) => x.id === c.participantId)
 
-  const wrote = new Set(
-    notes.filter((n) => n.blockIndex === session.currentBlockIndex).map((n) => n.participantId),
-  )
-  const missed = participants.filter((p) => !wrote.has(p.id))
-  for (const p of missed) {
-    await saveParticipant({ ...p, misses: p.misses + 1 })
+  /* ── Boşa basma ── */
+  if (wrongIndex === null || alreadyCaught.has(wrongIndex)) {
+    const resolved: Catch = {
+      ...c,
+      status: 'miss',
+      points: -FALSE_ALARM_PENALTY,
+      resolvedAt: Date.now(),
+    }
+    await saveCatch(resolved)
+    if (p) {
+      await saveParticipant({
+        ...p,
+        score: Math.max(0, p.score - FALSE_ALARM_PENALTY),
+        falseAlarms: p.falseAlarms + 1,
+      })
+    }
+    return resolved
   }
-  return missed.length
+
+  /* ── Yakaladı ── */
+  const wrong = wrongBlocks[wrongIndex]
+  const basladi = timeAtChar(marks, wrong.start) ?? c.flaggedAt
+  const bitti = timeAtChar(marks, wrong.end) ?? basladi
+  // Hatanın okunması bittikten sonra ne kadar çabuk bastı?
+  const gecikme = Math.max(0, c.flaggedAt - bitti)
+  const oran = 1 - gecikme / CATCH_WINDOW_MS
+  const speedBonus = Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, oran)))
+  const points = (wrong.points ?? 100) + speedBonus
+
+  const resolved: Catch = {
+    ...c,
+    status: 'hit',
+    wrongIndex,
+    points,
+    // Soruyu DOĞRU ŞIK OLMADAN gönderiyoruz
+    ...(wrong.followUp
+      ? { question: wrong.followUp.question, options: wrong.followUp.options }
+      : {}),
+    resolvedAt: Date.now(),
+  }
+  await saveCatch(resolved)
+
+  if (p) {
+    await saveParticipant({
+      ...p,
+      score: p.score + points,
+      hits: p.hits + 1,
+    })
+  }
+  return resolved
+}
+
+/** Öğrenci tarafı: ek soruya cevap verir. Puanı yine hoca hesaplar. */
+export async function answerCatch(c: Catch, answerIndex: number): Promise<void> {
+  await saveCatch({ ...c, answerIndex })
+}
+
+/**
+ * Hoca cihazı: cevabı değerlendirir, doğruysa bonus ekler ve doğru şıkkı
+ * açığa çıkarır.
+ */
+export async function gradeAnswer(
+  c: Catch,
+  wrongBlocks: WrongBlock[],
+  participants: Participant[],
+): Promise<Catch> {
+  const wrong = c.wrongIndex !== undefined ? wrongBlocks[c.wrongIndex] : undefined
+  const fu = wrong?.followUp
+  if (!fu || c.answerIndex === undefined) return c
+
+  const dogru = c.answerIndex === fu.correctIndex
+  const bonus = dogru ? fu.bonus : 0
+
+  const graded: Catch = {
+    ...c,
+    answerCorrect: dogru,
+    bonus,
+    revealIndex: fu.correctIndex,
+    revealText: wrong?.correction || wrong?.explanation || '',
+  }
+  await saveCatch(graded)
+
+  if (bonus > 0) {
+    const p = participants.find((x) => x.id === c.participantId)
+    if (p) await saveParticipant({ ...p, score: p.score + bonus })
+  }
+  return graded
+}
+
+/**
+ * Ders bitince: hiç yakalayamadığı her hata için "kaçırdı" işlenir.
+ * Puan düşmez — bilgi eksiğini raporda göstermek için.
+ */
+export async function markMissedWrongs(
+  wrongCount: number,
+  participants: Participant[],
+  catches: Catch[],
+): Promise<void> {
+  for (const p of participants) {
+    const yakaladigi = new Set(
+      catches
+        .filter((c) => c.participantId === p.id && c.status === 'hit' && c.wrongIndex !== undefined)
+        .map((c) => c.wrongIndex as number),
+    )
+    const kacirdi = wrongCount - yakaladigi.size
+    if (kacirdi > 0 && p.misses !== kacirdi) {
+      await saveParticipant({ ...p, misses: kacirdi })
+    }
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   ARAŞTIRMA ANKETİ
+   ══════════════════════════════════════════════════════════ */
+
+export async function submitSurvey(r: SurveyResponse): Promise<void> {
+  if (live()) {
+    await setDoc(doc(firestore!, 'surveys', r.id), r)
+    return
+  }
+  store.putSurvey(r)
+}
+
+export function watchSurveys(sessionId: string, cb: (list: SurveyResponse[]) => void): () => void {
+  if (live()) {
+    const q = query(collection(firestore!, 'surveys'), where('sessionId', '==', sessionId))
+    return onSnapshot(
+      q,
+      (snap) => cb(snap.docs.map((d) => d.data() as SurveyResponse)),
+      (err) => {
+        console.error('[surveys] dinlenemedi:', err)
+        cb([])
+      },
+    )
+  }
+  const emit = () => cb(store.getSurveys().filter((r) => r.sessionId === sessionId))
+  emit()
+  return store.subscribe(emit)
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -624,7 +789,7 @@ export function ratingSummary(ratings: SessionRating[]) {
 
 /* ══════════════════════════════════════════════════════════
    ESKİ AMFİ MODU (ZİL) — GEÇIŞ DÖNEMİ
-   Yeni kod StudentNote kullanıyor. Eski ekranlar uyumlu tutulması için.
+   Yeni kod Catch kullanıyor. Amfi 1.0 ekranları için tutuluyor.
    ══════════════════════════════════════════════════════════ */
 
 export async function sendBuzz(session: LiveSession, participantId: string): Promise<void> {

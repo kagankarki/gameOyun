@@ -72,16 +72,37 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // Öğrenci notları (Amfi 2.0): öğrenci yazar, hoca cihazı Gemini
-    // sonucunu (status/geminiFeedback) işler.
+    // Ders metni, hataların yeri ve soruların DOĞRU ŞIKLARI.
+    // Yalnızca oturumu açan hoca okuyabilir — öğrenci okuyabilseydi
+    // bütün cevapları ders başlamadan görürdü.
+    match /sessionSecrets/{sessionId} {
+      allow read: if isTeacher() && resource.data.teacherId == request.auth.uid;
+      allow create: if isTeacher() && request.resource.data.teacherId == request.auth.uid;
+      allow update, delete: if isTeacher() && resource.data.teacherId == request.auth.uid;
+    }
+
+    // Yakalamalar: öğrenci yalnızca "bastım" der; hangi hata, kaç puan
+    // ve hangi soru olduğunu hoca cihazı yazar.
     //
-    // Doğrulamayı yalnızca hoca yazabilir — öğrenci kendi notunu
-    // "valid" işaretleyebilseydi puanı kendi verirdi.
-    match /studentNotes/{noteId} {
+    // Öğrencinin yazabildiği tek şey `answerIndex` — şık seçimi. Puanı
+    // kendi yazabilseydi istediği kadar veirdi.
+    match /catches/{catchId} {
       allow read: if signedIn();
-      allow create: if signedIn() && request.resource.data.status == 'pending';
-      allow update: if isTeacher();
+      allow create: if signedIn()
+        && request.resource.data.status == 'pending'
+        && request.resource.data.points == 0;
+      allow update: if isTeacher()
+        || (signedIn()
+            && request.resource.data.diff(resource.data).affectedKeys()
+                 .hasOnly(['answerIndex']));
       allow delete: if isTeacher();
+    }
+
+    // Araştırma anketi: öğrenci doldurur, hoca okur.
+    match /surveys/{surveyId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if isTeacher();
     }
 
     // Ders sonu değerlendirmesi (5 yıldız): her katılımcı bir oy.

@@ -80,6 +80,15 @@ export type LiveSessionMode = 'capture' | 'quiz'
  */
 export type LiveSessionVersion = 1 | 2
 
+/**
+ * OTURUM — HERKESE AÇIK KISIM
+ *
+ * Öğrencinin telefonu bu dokümanı okur. Ders metni, hataların yeri ve
+ * çoktan seçmeli soruların doğru şıkları BURADA DURMAZ — hepsi
+ * `SessionSecret` içinde, yalnızca hocanın okuyabildiği ayrı bir
+ * dokümanda. Aksi hâlde tarayıcı konsolunu açan öğrenci bütün
+ * cevapları ders başlamadan görürdü.
+ */
 export interface LiveSession {
   id: string
   /** 6 karakterli katılım kodu — karışan harfler (I, O, 0, 1) kullanılmaz */
@@ -92,34 +101,50 @@ export interface LiveSession {
   mode: LiveSessionMode
   version: LiveSessionVersion
   /**
-   * Amfi 2.0: ders notunun sesli okunacak parçaları.
-   * `currentBlockIndex` ve `WrongBlock.blockIndex` bu diziye işaret eder.
-   * Amfi 1.0'da boştur — orada bölümler `Lesson.blocks`ten gelir.
+   * Sürekli okuma (yeni) mi, parça parça (eski) mı?
+   * Sürekli okumada metnin tamamı tek seferde okunur; öğrenci istediği
+   * an "HATA VAR"a basar, hangi hataya denk geldiği hoca cihazındaki
+   * karakter/zaman çizelgesinden hesaplanır.
    */
+  readingMode: ReadingMode
+  /** Kaç hata var — öğrenciye ilerleme göstermek için (yerleri değil) */
+  wrongCount: number
+  /** Sürekli okumada metnin toplam karakter sayısı — ilerleme çubuğu */
+  scriptLength: number
+  /** Eski parça modeli — sürekli okumada boştur */
   segments: string[]
   currentBlockIndex: number
   /**
    * TTS'in gerçekten konuşmaya başladığı an (onstart).
-   * Not yazma penceresinin sıfır noktası — speak() çağrısı değil, çünkü
-   * arada ~1 sn başlama gecikmesi var.
+   * speak() çağrısı değil — arada ~1 sn başlama gecikmesi var.
    */
   blockStartedAt: number
-  /** Bölümün okunması kaç ms sürdü — okuma bitmeden 0'dır */
+  /** Okuma kaç ms sürdü — bitmeden 0'dır */
   blockDurationMs: number
-  /**
-   * Okuma daha bitmeden gelen notlara hız bonusu verebilmek için
-   * karakter sayısından hesaplanan tahmini süre.
-   */
+  /** Karakter sayısından hesaplanan tahmini okuma süresi */
   blockEstimateMs: number
-  /** Tolerans süresi bu ana kadar — öğrencinin telefonunda geri sayım */
+  /** Tolerans süresi bu ana kadar (eski parça modeli) */
   graceEndsAt: number
-  /** Hocanın belirttiği yanlışlar — öğrenci bu bölümde bir note yazsa kontrol edilir */
-  wrongBlocks: WrongBlock[]
   createdAt: number
   updatedAt: number
 }
 
+export type ReadingMode = 'continuous' | 'segmented'
+
+/**
+ * OTURUM — HOCAYA ÖZEL KISIM
+ * Firestore kuralları bu koleksiyonu yalnızca oturumu açan hocaya açar.
+ */
+export interface SessionSecret {
+  sessionId: string
+  teacherId: string
+  /** Sesli okunacak metnin tamamı */
+  script: string
+  wrongBlocks: WrongBlock[]
+}
+
 export interface WrongBlock {
+  /** Eski parça modelinde parça indeksi; sürekli okumada sıra numarası */
   blockIndex: number
   text: string
   /** Hoca'nın yazısı: "Bu yanlış çünkü..." */
@@ -128,6 +153,24 @@ export interface WrongBlock {
   correction: string
   /** Varsayılan 100 — yakalayan öğrenci bunu + hız bonusu alır */
   points?: number
+  /** Sürekli okumada ham metindeki karakter aralığı */
+  start: number
+  end: number
+  /** Yakalayan öğrenciye sorulan ek soru — hoca hazırlık ekranında yazar */
+  followUp?: FollowUpQuestion
+}
+
+/**
+ * Hatayı yakalayan öğrenciye sorulan çoktan seçmeli soru.
+ * Doğru bilirse ek puan; bilemezse yakalama puanını korur, ceza yok.
+ */
+export interface FollowUpQuestion {
+  question: string
+  /** 2–5 şık */
+  options: string[]
+  correctIndex: number
+  /** Doğru bilirse eklenecek puan */
+  bonus: number
 }
 
 export interface Participant {
@@ -148,28 +191,46 @@ export interface Participant {
 }
 
 /**
- * Amfi 2.0: Öğrenci yanlış bölümde not yazıyor.
- * Gemini doğruluyor, öğrenci puan alıyor.
+ * YAKALAMA — öğrenci "HATA VAR"a bastığında oluşan kayıt.
+ *
+ * Öğrenci yalnızca `flaggedAt` ile bu dokümanı açar; gerisini HOCA
+ * cihazı doldurur. Hangi hataya denk geldiğini, kaç puan olduğunu ve
+ * sorulacak soruyu hoca yazar — öğrencinin telefonu bunları bilmiyor,
+ * bilseydi puanını kendi verirdi.
  */
-export interface StudentNote {
+export interface Catch {
   id: string
   sessionId: string
   participantId: string
-  blockIndex: number
-  /** Öğrenci yazdığı kısa not */
-  text: string
-  /** Gemini'nin doğrulama sonucu */
-  status: 'pending' | 'valid' | 'invalid'
-  /** Gemini'nin açıklaması — öğrenciye gösterilir */
-  geminiFeedback?: string
+  /** Butona bastığı an — tepki süresi ve eşleştirme bunun üzerinden */
+  flaggedAt: number
   /**
-   * "HATA VAR"a bastığı an — asıl tepki süresi budur.
-   * Hız bonusu buradan hesaplanır; `createdAt` yazıyı bitirip gönderdiği
-   * an olduğu için yavaş yazan öğrenciyi haksız yere cezalandırırdı.
+   * `pending` hoca henüz çözmedi · `hit` bir hataya denk geldi ·
+   * `miss` o anda okunan yerde hata yoktu
    */
-  flaggedAt?: number
+  status: 'pending' | 'hit' | 'miss'
+  /** Yakaladığı hatanın sırası (hit ise) */
+  wrongIndex?: number
+  /** Yakalama puanı (hız bonusu dâhil) — miss ise negatif ceza */
+  points: number
+  /**
+   * Hocanın hazırladığı ek soru, DOĞRU ŞIK OLMADAN.
+   * Hoca cihazı yakalamayı çözerken buraya kopyalar; öğrenci yalnızca
+   * soruyu ve şıkları görür.
+   */
+  question?: string
+  options?: string[]
+  /** Öğrencinin işaretlediği şık — öğrencinin yazabildiği TEK alan */
+  answerIndex?: number
+  /** Hoca cihazının verdiği karar */
+  answerCorrect?: boolean
+  /** Doğruysa eklenen puan */
+  bonus?: number
+  /** Cevaptan sonra gösterilen doğru şık ve açıklama */
+  revealIndex?: number
+  revealText?: string
   createdAt: number
-  validatedAt?: number
+  resolvedAt?: number
 }
 
 /**
@@ -189,8 +250,28 @@ export interface SessionRating {
 }
 
 /**
+ * ARAŞTIRMA ANKETİ — "Kasıtlı Hata Temelli Anatomi Eğitimi"
+ * Yıldız değerlendirmesinden ayrı, isteğe bağlı bilimsel form.
+ */
+export interface SurveyResponse {
+  id: string
+  sessionId: string
+  participantId: string
+  /** Araştırmacının eşleştirmesi için — öğrenci girer, zorunlu değil */
+  katilimciKodu: string
+  grupKodu: string
+  /** Daha önce bu konuda formal ders aldı mı */
+  oncekiDers: 'evet' | 'hayir' | ''
+  /** 1–41 arası madde numarası → 1–5 arası yanıt (ters maddeler ham hâliyle) */
+  likert: Record<number, number>
+  /** 39, 40, 41 numaralı açık uçlu sorular */
+  acikUclu: Record<number, string>
+  createdAt: number
+}
+
+/**
  * Eski Amfi modu (TTS zili) — geçiş dönemi için tutulur.
- * Yeni kod StudentNote kullanır.
+ * Yeni kod Catch kullanır.
  */
 export interface Buzz {
   id: string

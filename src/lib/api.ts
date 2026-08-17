@@ -36,6 +36,7 @@ export async function signUp(
       uid: cred.user.uid,
       name,
       email,
+      password,
       role,
       createdAt: Date.now(),
     }
@@ -50,7 +51,7 @@ export async function signUp(
     throw new Error('Bu e-posta ile zaten bir hesap var. Giriş yapmayı dene.')
   }
   if (password.length < 6) throw new Error('Şifre en az 6 karakter olmalı.')
-  const user: AppUser = { uid: uid('u'), name, email: key, role, createdAt: Date.now() }
+  const user: AppUser = { uid: uid('u'), name, email: key, password, role, createdAt: Date.now() }
   store.putUser(user)
   store.putCred(key, password)
   store.setSession(user.uid)

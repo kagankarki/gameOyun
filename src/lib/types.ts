@@ -4,6 +4,7 @@ export interface AppUser {
   uid: string
   name: string
   email: string
+  password?: string
   role: Role
   createdAt: number
 }

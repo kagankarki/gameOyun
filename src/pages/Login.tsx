@@ -20,8 +20,8 @@ export default function Login() {
   const [mode, setMode] = useState<'in' | 'up'>('in')
   const [role, setRole] = useState<Role>(params.get('rol') === 'teacher' ? 'teacher' : 'student')
   const [name, setName] = useState('')
-  const [email, setEmail] = useState('kagankarki03@gmail.com')
-  const [password, setPassword] = useState('kagan3002')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
 

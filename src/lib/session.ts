@@ -251,6 +251,7 @@ export async function findSessionByCode(code: string): Promise<LiveSession | nul
   if (!key) return null
 
   if (live()) {
+    await ensureAuthForJoin() // Firestore sorgusundan önce yetkiyi al
     const q = query(collection(firestore!, 'sessions'), where('code', '==', key), limit(1))
     const snap = await getDocs(q)
     return snap.empty ? null : hydrate(snap.docs[0].data() as LiveSession)

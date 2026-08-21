@@ -11,6 +11,7 @@
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   onSnapshot,
   query,
@@ -259,6 +260,15 @@ export async function findSessionByCode(code: string): Promise<LiveSession | nul
     return snap.empty ? null : hydrate(snap.docs[0].data() as LiveSession)
   }
   const found = store.getLiveSessions().find((s) => s.code === key)
+  return found ? hydrate(found) : null
+}
+
+export async function getSession(id: string): Promise<LiveSession | null> {
+  if (live()) {
+    const snap = await getDoc(doc(firestore!, 'sessions', id))
+    return snap.exists() ? hydrate(snap.data() as LiveSession) : null
+  }
+  const found = store.getLiveSessions().find((s) => s.id === id)
   return found ? hydrate(found) : null
 }
 

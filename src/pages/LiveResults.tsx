@@ -1,13 +1,9 @@
 /**
- * HOCA — OTURUM RAPORU
+ * HOCA — OTURUM RAPORU VE EXCEL İNDİRME EKRANI
  * Yol: /hoca/sonuclar/:id  (:id = ders id'si)
- *
- * Tek kişilik mod kaldırıldığı için rapor artık `attempts` üzerinden değil,
- * dersin AMFİ OTURUMLARI üzerinden çıkıyor. Birden çok oturum açıldıysa
- * (farklı şubeler, tekrar dersi) üstteki seçiciyle geçiş yapılır.
  */
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 
 import Button3D from '@/components/Button3D'
@@ -24,12 +20,17 @@ import type {
   SessionSecret,
   SurveyResponse,
 } from '@/lib/types'
+import { useToast } from '@/components/Toast'
 import { altBoyutOrtalamalari } from '@/lib/survey'
-import { cx, fmtDate, initials, scoreTone } from '@/lib/utils'
+import { exportSessionToExcel } from '@/lib/exportExcel'
+import { cx, fmtDate, initials } from '@/lib/utils'
 
 export default function LiveResults() {
   const { id } = useParams()
+  const [searchParams] = useSearchParams()
+  const sessionParam = searchParams.get('sessionId')
   const nav = useNavigate()
+  const toast = useToast()
 
   const [lesson, setLesson] = useState<Lesson | null>(null)
   const [sessions, setSessions] = useState<LiveSession[]>([])
@@ -38,27 +39,50 @@ export default function LiveResults() {
   const [secret, setSecret] = useState<SessionSecret | null>(null)
   const [surveys, setSurveys] = useState<SurveyResponse[]>([])
   const [ratings, setRatings] = useState<SessionRating[]>([])
-  const [pickedId, setPickedId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!id) return
-    api.getLesson(id).then((l) => {
-      setLesson(l)
-      setLoading(false)
+    let alive = true
+    api.getLesson(id).then(async (l) => {
+      if (!alive) return
+      if (l) {
+        setLesson(l)
+        setLoading(false)
+      } else {
+        // Parametre olarak sessionId gönderilmiş olabilir
+        const s = await ses.getSession(id).catch(() => null)
+        if (s?.lessonId) {
+          const l2 = await api.getLesson(s.lessonId).catch(() => null)
+          if (alive && l2) setLesson(l2)
+        }
+        if (alive) setLoading(false)
+      }
     })
+    return () => {
+      alive = false
+    }
   }, [id])
 
-  useEffect(
-    () => ses.watchAllSessions((all) => setSessions(all.filter((s) => s.lessonId === id))),
-    [id],
-  )
+  useEffect(() => {
+    if (!id) return
+    return ses.watchAllSessions((all) => {
+      setSessions(
+        all.filter(
+          (s) => s.lessonId === id || s.id === id || (lesson?.id && s.lessonId === lesson.id),
+        ),
+      )
+    })
+  }, [id, lesson?.id])
 
-  /** Seçim yoksa en yeni oturum */
-  const picked = useMemo(
-    () => sessions.find((s) => s.id === pickedId) ?? sessions[0] ?? null,
-    [sessions, pickedId],
-  )
+  /** Oturum: URL'den gelen veya en son oluşturulan oturum */
+  const picked: LiveSession | null = useMemo(() => {
+    if (sessionParam) {
+      const found = sessions.find((s) => s.id === sessionParam)
+      if (found) return found
+    }
+    return sessions[0] ?? null
+  }, [sessions, sessionParam])
 
   useEffect(() => {
     if (!picked) return
@@ -78,15 +102,31 @@ export default function LiveResults() {
 
   /** Hata bazlı: kaçı yakaladı, ek soruyu kaçı bildi? */
   const perWrong = useMemo(() => {
-    const wrongs = secret?.wrongBlocks ?? []
+    let wrongs = secret?.wrongBlocks ?? lesson?.wrongBlocks ?? []
+    if (wrongs.length === 0 && lesson?.blocks?.length) {
+      wrongs = lesson.blocks
+        .filter((b) => b.isWrong)
+        .map((b, idx) => ({
+          blockIndex: idx,
+          text: b.text,
+          explanation: '',
+          correction: b.correction || '',
+          points: 100,
+          start: 0,
+          end: b.text.length,
+          difficulty: 'orta',
+        }))
+    }
     return wrongs.map((w, i) => {
-      const hits = catches.filter((c) => c.status === 'hit' && c.wrongIndex === i)
+      const hits = catches.filter(
+        (c) => c.status === 'hit' && (c.wrongIndex === i || c.wrongIndex === w.blockIndex),
+      )
       const cevaplanan = hits.filter((c) => c.answerCorrect !== undefined)
       const dogru = cevaplanan.filter((c) => c.answerCorrect).length
       const pct = participants.length ? Math.round((hits.length / participants.length) * 100) : 0
       return { wrong: w, valid: hits.length, pct, cevaplanan: cevaplanan.length, dogru }
     })
-  }, [secret, catches, participants])
+  }, [secret, lesson, catches, participants])
 
   /** Anket alt boyut ortalamaları — araştırmacı için */
   const boyutlar = useMemo(
@@ -100,16 +140,69 @@ export default function LiveResults() {
     const avg = participants.length
       ? Math.round(participants.reduce((s, p) => s + p.score, 0) / participants.length)
       : 0
+    const totalPossible = participants.length * (picked?.wrongCount || lesson?.wrongBlocks?.length || 1)
+    const rate = chances
+      ? Math.round((hits / chances) * 100)
+      : totalPossible
+        ? Math.round((hits / totalPossible) * 100)
+        : 0
     return {
       students: participants.length,
       avg,
-      rate: chances ? Math.round((hits / chances) * 100) : 0,
+      rate,
     }
-  }, [participants])
+  }, [participants, picked, lesson])
+
+  const ranked = useMemo(
+    () => [...participants].sort((a, b) => b.score - a.score || a.joinedAt - b.joinedAt),
+    [participants],
+  )
+
+  const handleExport = () => {
+    if (!lesson) return
+    const activeSession: LiveSession = picked || {
+      id: 'session_export',
+      code: 'GENEL',
+      lessonId: lesson.id,
+      lessonTitle: lesson.title,
+      teacherId: lesson.teacherId,
+      teacherName: lesson.teacherName,
+      phase: 'ended',
+      mode: 'capture',
+      version: 2,
+      readingMode: 'continuous',
+      segments: [],
+      wrongCount: lesson.wrongBlocks?.length || 0,
+      scriptLength: lesson.script?.length || 0,
+      currentBlockIndex: 0,
+      blockStartedAt: 0,
+      blockDurationMs: 0,
+      blockEstimateMs: 0,
+      graceEndsAt: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+
+    exportSessionToExcel({
+      lesson,
+      session: activeSession,
+      participants,
+      catches,
+      secret: secret || {
+        sessionId: activeSession.id,
+        teacherId: lesson.teacherId,
+        script: lesson.script || '',
+        wrongBlocks: lesson.wrongBlocks || [],
+      },
+      surveys,
+      ratings,
+    })
+    toast('Excel raporu başarıyla indirildi.', 'success')
+  }
 
   if (loading) return <Loader label="Rapor getiriliyor…" />
 
-  if (!lesson)
+  if (!lesson) {
     return (
       <div className="grid min-h-[60dvh] place-items-center px-6">
         <div className="file-card p-10 text-center">
@@ -120,10 +213,7 @@ export default function LiveResults() {
         </div>
       </div>
     )
-
-  const ranked = [...participants].sort(
-    (a, b) => b.score - a.score || a.joinedAt - b.joinedAt,
-  )
+  }
 
   return (
     <motion.div
@@ -132,280 +222,233 @@ export default function LiveResults() {
       exit={{ opacity: 0 }}
       className="mx-auto max-w-6xl px-5 py-12 sm:px-6"
     >
-      <button
-        onClick={() => nav('/hoca')}
-        className="mb-6 rounded-sm text-sm font-medium text-ink-muted transition-colors hover:text-ink"
-      >
-        ← Panele dön
-      </button>
+      {/* Üst Navigasyon & İndirme Butonu */}
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <button
+          onClick={() => nav('/hoca')}
+          className="rounded-sm text-sm font-medium text-ink-muted transition-colors hover:text-ink"
+        >
+          ← Panele dön
+        </button>
 
-      <div className="mb-8">
-        <p className="label">OTURUM RAPORU</p>
-        <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-          {lesson.title}
-        </h1>
-        <p className="mt-1.5 text-sm text-ink-muted">{lesson.teacherName}</p>
-        <div className="rule mt-8" />
+        <Button3D tone="success" size="md" onClick={handleExport} className="shadow-lg">
+          📥 Excel Raporu İndir (.xlsx / .csv)
+        </Button3D>
       </div>
 
-      {!picked ? (
-        <div className="file-card grid place-items-center p-16 text-center">
-          <p className="label">OTURUM YOK</p>
-          <h3 className="mt-4 font-display text-xl font-bold text-ink">
-            Bu ders henüz amfide işlenmedi
-          </h3>
-          <p className="mt-2 max-w-md text-sm text-ink-muted">
-            Amfi oturumu açıp dersi işlediğinde sonuçlar buraya düşecek.
+      {/* Başlık Alanı */}
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4 rounded-sm border border-paper-edge bg-paper-card p-6">
+        <div>
+          <span className="label-chip border-paper-edge bg-paper-deep text-ink">
+            {lesson.subject?.toUpperCase() || 'DERS'} · OTURUM RAPORU
+          </span>
+          <h1 className="mt-3 font-display text-2xl font-bold tracking-tight text-ink sm:text-3xl">
+            {lesson.title}
+          </h1>
+          <p className="mt-1 text-sm text-ink-muted">
+            Öğretim Üyesi: {lesson.teacherName}
+            {picked?.code && ` · Oturum PIN: ${picked.code}`}
           </p>
-          <div className="mt-7">
-            <Button3D onClick={() => nav(`/hoca/amfi-setup/${lesson.id}`)}>
-              Amfi Oturumu Aç
-            </Button3D>
-          </div>
         </div>
-      ) : (
-        <>
-          {/* Oturum seçici — birden çok kez işlendiyse */}
-          {sessions.length > 1 && (
-            <div className="mb-8">
-              <p className="label mb-2">OTURUM SEÇ</p>
-              <div className="flex flex-wrap gap-2">
-                {sessions.map((s) => (
-                  <button
-                    key={s.id}
-                    onClick={() => setPickedId(s.id)}
-                    className={cx(
-                      'label-chip transition-colors',
-                      s.id === picked.id
-                        ? 'border-ink bg-ink text-paper'
-                        : 'border-paper-edge bg-paper-deep hover:border-ink',
-                    )}
-                  >
-                    {s.code} · {fmtDate(s.createdAt)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
-          {/* Özet künyesi */}
-          <div className="mb-12 grid grid-cols-2 gap-px overflow-hidden rounded-sm border border-paper-edge bg-paper-edge lg:grid-cols-4">
-            {(
-              [
-                ['KATILAN ÖĞRENCİ', summary.students],
-                ['GİZLİ HATA', picked.wrongCount],
-                ['ORTALAMA PUAN', summary.avg],
-                ['HATA YAKALAMA', `%${summary.rate}`],
-              ] as const
-            ).map(([k, v]) => (
-              <div key={k} className="bg-paper-card p-5">
-                <p className="font-display text-3xl font-bold text-ink">{v}</p>
-                <p className="label mt-1">{k}</p>
+        <Button3D tone="success" onClick={handleExport} className="shrink-0">
+          📥 Tüm Verileri İndir
+        </Button3D>
+      </div>
+
+      {/* Özet Künyesi */}
+      <div className="mb-12 grid grid-cols-2 gap-px overflow-hidden rounded-sm border border-paper-edge bg-paper-edge lg:grid-cols-4">
+        {(
+          [
+            ['KATILAN ÖĞRENCİ', summary.students],
+            ['GİZLİ HATA', picked?.wrongCount ?? (lesson.wrongBlocks?.length || 0)],
+            ['ORTALAMA PUAN', summary.avg],
+            ['HATA YAKALAMA', `%${summary.rate}`],
+          ] as const
+        ).map(([k, v]) => (
+          <div key={k} className="bg-paper-card p-5">
+            <p className="font-display text-3xl font-bold text-ink">{v}</p>
+            <p className="label mt-1">{k}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Hata Analizi */}
+      <section className="mb-14">
+        <div className="mb-5 flex flex-wrap items-baseline gap-3">
+          <h2 className="font-display text-xl font-bold tracking-tight text-ink">
+            Hata Analizi
+          </h2>
+          <span className="text-sm text-ink-muted">— Hangi hatayı kaç öğrenci yakaladı</span>
+        </div>
+
+        {perWrong.length === 0 ? (
+          <div className="file-card p-8 text-center text-sm text-ink-muted">
+            Bu derste işaretlenmiş hata bulunmuyor.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {perWrong.map(({ wrong, valid, pct, cevaplanan, dogru }, i) => (
+              <div key={i} className="file-card p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <span className="grid h-7 w-7 shrink-0 place-items-center rounded-sm bg-mark-soft font-mono text-xs font-bold text-mark">
+                      #{i + 1}
+                    </span>
+                    <div>
+                      <p className="font-medium text-ink">"{wrong.text}"</p>
+                      <p className="mt-0.5 text-xs text-ink-muted">
+                        Doğrusu: <span className="text-verify">{wrong.correction || 'Belirtilmemiş'}</span> · Zorluk: {wrong.difficulty?.toUpperCase() || 'ORTA'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="font-display text-xl font-bold text-ink">
+                      {valid}
+                      <span className="text-xs font-normal text-ink-muted">
+                        /{participants.length}
+                      </span>
+                    </span>
+                    <p className="font-mono text-xs text-ink-muted">%{pct}</p>
+                  </div>
+                </div>
+
+                {wrong.followUp && (
+                  <div className="mt-3 border-t border-paper-edge pt-3 text-xs text-ink-muted">
+                    <span className="font-semibold text-ink">5 Şıklı Ek Soru:</span> "{wrong.followUp.question}" —{' '}
+                    <span className="text-verify font-medium">{dogru}/{cevaplanan} kişi bildi</span>
+                  </div>
+                )}
               </div>
             ))}
           </div>
+        )}
+      </section>
 
-          {/* Hata analizi */}
-          <section className="mb-14">
-            <div className="mb-5 flex flex-wrap items-baseline gap-3">
-              <h2 className="font-display text-xl font-bold tracking-tight text-ink">
-                Hata analizi
-              </h2>
-              <span className="text-sm text-ink-muted">— hangi hatayı kaç kişi yakaladı</span>
-            </div>
-
-            {perWrong.length === 0 ? (
-              <div className="file-card p-8 text-center text-sm text-ink-muted">
-                Bu oturumda işaretlenmiş hata yok.
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {perWrong.map(({ wrong, valid, pct, cevaplanan, dogru }, i) => (
-                  <div key={i} className="file-card-tabbed border-l-mark p-5">
-                    <div className="mb-3 flex flex-wrap items-center gap-3">
-                      <span className="font-mono text-[11px] font-medium text-ink-faint">
-                        HATA {String(i + 1).padStart(2, '0')}
-                      </span>
-                      <span className="label-chip border-mark-edge bg-mark-soft text-mark">
-                        {wrong.points ?? 100} PUAN
-                      </span>
-                      {cevaplanan > 0 && (
-                        <span className="label-chip border-verify-edge bg-verify-soft text-verify">
-                          EK SORU: {dogru}/{cevaplanan} DOĞRU
-                        </span>
-                      )}
-                      <span className="ml-auto font-mono text-sm">
-                        <span className={cx('font-bold', scoreTone(pct))}>{valid}</span>
-                        <span className="text-ink-muted">
-                          {' '}
-                          / {participants.length} kişi · %{pct}
-                        </span>
-                      </span>
-                    </div>
-
-                    <p className="mark-underline text-[15px] leading-relaxed text-ink">
-                      {wrong.text}
-                    </p>
-
-                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-paper-deep">
-                      <div
-                        className="h-full rounded-full bg-verify transition-all duration-700"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </div>
-
-                    <p className="marginalia mt-4">
-                      <span className="font-mono text-[10px] font-bold uppercase tracking-[0.16em] text-verify">
-                        DOĞRUSU
-                      </span>
-                      <br />
-                      {wrong.correction || wrong.explanation}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          {/* Öğrenci çizelgesi */}
-          <section className="mb-14">
-            <h2 className="mb-5 font-display text-xl font-bold tracking-tight text-ink">
-              Öğrenci sonuçları
+      {/* Katılımcı Sıralaması */}
+      <section className="mb-14">
+        <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
+          <div>
+            <h2 className="font-display text-xl font-bold tracking-tight text-ink">
+              Öğrenci Sıralaması
             </h2>
+            <p className="mt-1 text-xs text-ink-muted">
+              Puan = Hata yakalama tabanı (100) + Hız bonusu (0–50) + Ek soru (50) - Yanlış basış (-50)
+            </p>
+          </div>
+          <span className="label">{participants.length} ÖĞRENCİ</span>
+        </div>
 
-            {ranked.length === 0 ? (
-              <div className="file-card grid place-items-center p-14 text-center">
-                <p className="label">KATILIM YOK</p>
-                <p className="mt-4 max-w-md text-sm text-ink-muted">
-                  Bu oturuma kimse katılmamış.
-                </p>
-              </div>
-            ) : (
-              <div className="file-card overflow-hidden">
-                <div className="hidden grid-cols-[40px_1fr_repeat(4,88px)] gap-2 border-b border-paper-edge bg-paper-deep px-6 py-3 sm:grid">
-                  <span className="label">#</span>
-                  <span className="label">ÖĞRENCİ</span>
-                  <span className="label text-right">DOĞRU</span>
-                  <span className="label text-right">KAÇAN</span>
-                  <span className="label text-right">BOŞ</span>
-                  <span className="label text-right">PUAN</span>
-                </div>
-
-                {/* Mobilde sütun başlıkları görünmediği için sayılar
-                    çıplak kalıyordu (3 · 0 · 0 · 220). Küçük ekranda her
-                    sayı kendi etiketiyle birlikte gösteriliyor. */}
-                {ranked.map((p, i) => (
-                  <div
-                    key={p.id}
-                    className="border-b border-paper-edge px-5 py-4 text-sm last:border-0 sm:grid sm:grid-cols-[40px_1fr_repeat(4,88px)] sm:items-center sm:gap-2 sm:px-6"
-                  >
-                    <span
-                      className={cx(
-                        'hidden font-mono font-bold sm:block',
-                        i < 3 ? 'text-ink' : 'text-ink-faint',
-                      )}
-                    >
-                      {i + 1}
-                    </span>
-
-                    <div className="flex items-center gap-3">
-                      <div className="grid h-8 w-8 shrink-0 place-items-center rounded-sm border border-paper-edge bg-paper-deep font-mono text-[11px] font-bold text-ink">
-                        {initials(p.name)}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-semibold text-ink">
-                          <span className="font-mono text-ink-faint sm:hidden">{i + 1}. </span>
-                          {p.name}
-                        </p>
-                        <p className="font-mono text-[11px] text-ink-faint">
-                          {fmtDate(p.joinedAt)}
-                        </p>
-                      </div>
-                      <span className="font-display text-lg font-bold text-ink sm:hidden">
-                        {p.score}
-                      </span>
-                    </div>
-
-                    {/* Mobil: etiketli sayı şeridi */}
-                    <div className="mt-2.5 flex gap-4 pl-11 font-mono text-[11px] sm:hidden">
-                      <span className="text-verify">{p.hits} doğru</span>
-                      <span className="text-flag">{p.misses} kaçan</span>
-                      <span className="text-mark">{p.falseAlarms} boş</span>
-                    </div>
-
-                    {/* Masaüstü: sütunlar */}
-                    <span className="hidden text-right font-mono text-verify sm:block">
-                      {p.hits}
-                    </span>
-                    <span className="hidden text-right font-mono text-flag sm:block">
-                      {p.misses}
-                    </span>
-                    <span className="hidden text-right font-mono text-mark sm:block">
-                      {p.falseAlarms}
-                    </span>
-                    <span className="hidden text-right font-display font-bold text-ink sm:block">
-                      {p.score}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <RatingSummary ratings={ratings} />
-
-          {/* Araştırma anketi — alt boyut ortalamaları */}
-          <section className="mt-8">
-            <div className="file-card p-6">
-              <div className="flex flex-wrap items-baseline justify-between gap-3">
-                <div>
-                  <p className="label font-bold">ARAŞTIRMA ANKETİ</p>
-                  <p className="mt-1 text-xs text-ink-muted">
-                    Alt boyut ortalamaları (1–5) · ters maddeler çevrilmiş
-                  </p>
-                </div>
-                <span className="label">{surveys.length} YANIT</span>
-              </div>
-
-              {surveys.length === 0 ? (
-                <p className="py-8 text-center text-sm text-ink-muted">
-                  Henüz anket yanıtı yok.
-                </p>
-              ) : (
-                <>
-                  <div className="mt-5 space-y-2">
-                    {boyutlar.map((b) => (
-                      <div key={b.kod} className="flex items-center gap-3">
-                        <span className="w-5 shrink-0 font-mono text-xs font-bold text-ink-muted">
-                          {b.kod}
-                        </span>
-                        <span className="min-w-0 flex-1 truncate text-sm text-ink">
-                          {b.baslik}
-                        </span>
-                        <div className="hidden h-2 w-24 shrink-0 overflow-hidden rounded-sm bg-paper-deep sm:block">
-                          <div
-                            className="h-full bg-verify"
-                            style={{ width: `${(b.ortalama / 5) * 100}%` }}
-                          />
-                        </div>
-                        <span className="w-10 shrink-0 text-right font-display font-bold text-ink">
-                          {b.ortalama.toFixed(2)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-
-                  <p className="mt-5 rounded-sm bg-paper-deep p-3 text-xs leading-relaxed text-ink-muted">
-                    Alt boyutlar ayrı değerlendirilir; faktör yapısı doğrulanmadan tek bir
-                    “anket puanı” üretilmesi önerilmez. Bu sayılar algısal ikincil sonuçtur —
-                    hata tespit doğruluğu ve reaksiyon süresinin yerine geçmez.
-                  </p>
-                </>
-              )}
+        {participants.length === 0 ? (
+          <div className="file-card p-8 text-center text-sm text-ink-muted">
+            Bu oturuma henüz katılan öğrenci bulunmuyor.
+          </div>
+        ) : (
+          <div className="file-card overflow-hidden">
+            <div className="hidden grid-cols-[40px_1fr_repeat(4,88px)] gap-2 border-b border-paper-edge bg-paper-deep px-6 py-3 sm:grid">
+              <span className="label">#</span>
+              <span className="label">ÖĞRENCİ</span>
+              <span className="label text-right">DOĞRU</span>
+              <span className="label text-right">KAÇAN</span>
+              <span className="label text-right">BOŞ</span>
+              <span className="label text-right">PUAN</span>
             </div>
-          </section>
-        </>
-      )}
+
+            {ranked.map((p, i) => (
+              <div
+                key={p.id}
+                className="border-b border-paper-edge px-5 py-4 text-sm last:border-0 sm:grid sm:grid-cols-[40px_1fr_repeat(4,88px)] sm:items-center sm:gap-2 sm:px-6"
+              >
+                <span
+                  className={cx(
+                    'hidden font-mono font-bold sm:block',
+                    i < 3 ? 'text-ink' : 'text-ink-faint',
+                  )}
+                >
+                  {i + 1}
+                </span>
+
+                <div className="flex items-center gap-3">
+                  <div className="grid h-8 w-8 shrink-0 place-items-center rounded-sm border border-paper-edge bg-paper-deep font-mono text-[11px] font-bold text-ink">
+                    {initials(p.name)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-semibold text-ink">
+                      <span className="font-mono text-ink-faint sm:hidden">{i + 1}. </span>
+                      {p.name}
+                    </p>
+                    <p className="font-mono text-[11px] text-ink-faint">
+                      {fmtDate(p.joinedAt)}
+                    </p>
+                  </div>
+                  <span className="font-display text-lg font-bold text-ink sm:hidden">
+                    {p.score}
+                  </span>
+                </div>
+
+                <span className="hidden text-right font-mono text-verify sm:block">
+                  {p.hits}
+                </span>
+                <span className="hidden text-right font-mono text-flag sm:block">
+                  {p.misses}
+                </span>
+                <span className="hidden text-right font-mono text-mark sm:block">
+                  {p.falseAlarms}
+                </span>
+                <span className="hidden text-right font-display font-bold text-ink sm:block">
+                  {p.score}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Yıldız Değerlendirmeleri */}
+      <RatingSummary ratings={ratings} />
+
+      {/* Araştırma Anketi */}
+      <section className="mt-8">
+        <div className="file-card p-6">
+          <div className="flex flex-wrap items-baseline justify-between gap-3">
+            <div>
+              <p className="label font-bold">ARAŞTIRMA ANKETİ</p>
+              <p className="mt-1 text-xs text-ink-muted">
+                Alt boyut ortalamaları (1–5) · Ters maddeler çevrilmiş
+              </p>
+            </div>
+            <span className="label">{surveys.length} YANIT</span>
+          </div>
+
+          {surveys.length === 0 ? (
+            <p className="py-8 text-center text-sm text-ink-muted">
+              Henüz anket yanıtı bulunmuyor.
+            </p>
+          ) : (
+            <div className="mt-5 space-y-2">
+              {boyutlar.map((b) => (
+                <div key={b.kod} className="flex items-center gap-3">
+                  <span className="w-5 shrink-0 font-mono text-xs font-bold text-ink-muted">
+                    {b.kod}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                    {b.baslik}
+                  </span>
+                  <div className="hidden h-2 w-24 shrink-0 overflow-hidden rounded-sm bg-paper-deep sm:block">
+                    <div
+                      className="h-full bg-verify"
+                      style={{ width: `${(b.ortalama / 5) * 100}%` }}
+                    />
+                  </div>
+                  <span className="w-10 shrink-0 text-right font-display font-bold text-ink">
+                    {b.ortalama.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
     </motion.div>
   )
 }

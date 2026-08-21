@@ -55,7 +55,7 @@ export interface SpeakOptions {
   /** Konuşma bittiğinde (iptal edilmişse çağrılmaz) */
   onEnd?: () => void
   onError?: (message: string) => void
-  /** 0.1 – 10, varsayılan 1 */
+  /** 0.1 – 10, varsayılan 0.7 (%30 yavaşlatıldı) */
   rate?: number
 }
 
@@ -84,7 +84,7 @@ export function speak(
 
   const u = new SpeechSynthesisUtterance(text)
   u.lang = 'tr-TR'
-  u.rate = opts.rate ?? 1
+  u.rate = opts.rate ?? 0.7
   if (voice) u.voice = voice
 
   let cancelled = false

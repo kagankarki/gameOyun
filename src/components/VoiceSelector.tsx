@@ -11,6 +11,7 @@ import {
   type VoicePreset,
 } from '@/lib/speech'
 import { cx } from '@/lib/utils'
+import { useToast } from '@/components/Toast'
 
 interface Props {
   onSelect?: (preset: VoicePreset) => void
@@ -18,9 +19,11 @@ interface Props {
 }
 
 export default function VoiceSelector({ onSelect, compact = false }: Props) {
+  const toast = useToast()
   const [selectedId, setSelectedId] = useState<string>(getSelectedVoiceId())
   const [currentRate, setCurrentRate] = useState<number>(getSelectedVoiceRate())
   const [previewingId, setPreviewingId] = useState<string | null>(null)
+  const [loadingId, setLoadingId] = useState<string | null>(null)
   const [speakHandle, setSpeakHandle] = useState<SpeakHandle | null>(null)
 
   useEffect(() => {
@@ -43,30 +46,41 @@ export default function VoiceSelector({ onSelect, compact = false }: Props) {
   const handlePreview = (e: React.MouseEvent, preset: VoicePreset) => {
     e.stopPropagation()
 
-    if (previewingId === preset.id) {
+    // Eğer zaten çalıyorsa veya yükleniyorsa durdur
+    if (previewingId === preset.id || loadingId === preset.id) {
       speakHandle?.cancel()
       setPreviewingId(null)
+      setLoadingId(null)
       setSpeakHandle(null)
       return
     }
 
     speakHandle?.cancel()
-    setPreviewingId(preset.id)
+    setLoadingId(preset.id)
+    setPreviewingId(null)
 
     const handle = previewVoice(
       preset.id,
-      'Merhaba arkadaşlar, bugünkü dersimize hoş geldiniz. Hazırsanız başlayalım.',
+      'Merhaba arkadaşlar! Bugünkü dersimizde gizli hataları bulacağız. Hazırsanız başlayalım.',
       currentRate,
       () => {
+        // Ses bittiğinde
         setPreviewingId(null)
+        setLoadingId(null)
         setSpeakHandle(null)
       },
-      () => {
+      (err) => {
+        // Hata olduğunda
         setPreviewingId(null)
+        setLoadingId(null)
         setSpeakHandle(null)
+        toast(err || 'Ses önizleme hatası', 'error')
       },
     )
 
+    // Ses çalmaya başlayınca loading'i kapatıp playing'i aç
+    setPreviewingId(preset.id)
+    setLoadingId(null)
     setSpeakHandle(handle)
   }
 
@@ -81,11 +95,11 @@ export default function VoiceSelector({ onSelect, compact = false }: Props) {
           <div className="flex items-center gap-2">
             <span className="text-base font-bold text-ink">🎙️ Ses & Tonlama Seçimi</span>
             <span className="rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
-              ElevenLabs AI
+              ElevenLabs AI Aktif
             </span>
           </div>
           <p className="mt-1 text-xs text-ink-muted">
-            Dersin seslendirmesi için istediğiniz tonu seçebilir ve önizleme yapabilirsiniz.
+            Her ses karakteri farklı bir ton ve anlatım tarzına sahiptir. Butonlara basarak önizleyebilirsiniz.
           </p>
         </div>
 
@@ -124,6 +138,7 @@ export default function VoiceSelector({ onSelect, compact = false }: Props) {
         {ELEVENLABS_VOICE_PRESETS.map((preset) => {
           const isSelected = selectedId === preset.id
           const isPlaying = previewingId === preset.id
+          const isLoading = loadingId === preset.id
 
           return (
             <div
@@ -171,16 +186,23 @@ export default function VoiceSelector({ onSelect, compact = false }: Props) {
                   type="button"
                   onClick={(e) => handlePreview(e, preset)}
                   className={cx(
-                    'flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-semibold transition-all',
+                    'flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-semibold transition-all',
                     isPlaying
-                      ? 'bg-mark text-white animate-pulse'
-                      : 'bg-paper-edge/80 text-ink hover:bg-ink hover:text-paper',
+                      ? 'bg-mark text-white'
+                      : isLoading
+                      ? 'bg-paper-edge text-ink opacity-70'
+                      : 'bg-paper-edge text-ink hover:bg-ink hover:text-paper',
                   )}
                 >
                   {isPlaying ? (
                     <>
                       <span className="inline-block h-2 w-2 rounded-full bg-white animate-ping" />
                       Durdur
+                    </>
+                  ) : isLoading ? (
+                    <>
+                      <span className="inline-block h-2 w-2 rounded-full bg-ink animate-spin" />
+                      Yükleniyor…
                     </>
                   ) : (
                     <>

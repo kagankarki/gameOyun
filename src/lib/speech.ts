@@ -151,7 +151,6 @@ function loadVoices(): Promise<SpeechSynthesisVoice[]> {
     }
 
     speechSynthesis.addEventListener('voiceschanged', done)
-    // Chrome ses listesini bazen geç yüklüyor — 3 saniye bekle
     setTimeout(done, 3000)
   })
 }
@@ -192,9 +191,9 @@ export interface SpeakOptions {
   /** Konuşma bittiğinde (iptal edilmişse çağrılmaz) */
   onEnd?: () => void
   onError?: (message: string) => void
-  /** 0.1 – 10, varsayılan 0.85 (ElevenLabs) / 0.7 (Web Speech) */
+  /** 0.1 – 10, varsayılan 0.85 */
   rate?: number
-  /** İsteğe bağlı özel ElevenLabs ses ID'si */
+  /** Özel ElevenLabs ses ID'si */
   voiceId?: string
 }
 
@@ -230,55 +229,98 @@ async function speakElevenLabs(
   text: string,
   opts: SpeakOptions,
   state: { cancelled: boolean },
-  voiceFallback: SpeechSynthesisVoice | null,
 ) {
   const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY?.trim()
+  if (!apiKey) throw new Error('ElevenLabs API Anahtarı bulunamadı.')
+
   const voiceId =
     opts.voiceId ||
     getSelectedVoiceId() ||
     import.meta.env.VITE_ELEVENLABS_VOICE_ID?.trim() ||
     'JBFqnCBsd6RMkjVDRZzb'
 
-  // Doğal ve sakin okuma hızı (ElevenLabs için 0.85 ideal ve tok/akıcıdır)
   const userRate = opts.rate ?? getSelectedVoiceRate()
-  const speed = Math.min(Math.max(userRate, 0.7), 1.2)
 
-  const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/with-timestamps`
+  let audioUrl: string | null = null
+  let alignment: ElevenLabsAlignment | undefined
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'xi-api-key': apiKey,
-      'Content-Type': 'application/json',
+  // ElevenLabs API standart gövdesi (Geçersiz parametreler içermez)
+  const requestBody = {
+    text,
+    model_id: 'eleven_multilingual_v2',
+    voice_settings: {
+      stability: 0.5,
+      similarity_boost: 0.8,
     },
-    body: JSON.stringify({
-      text,
-      model_id: 'eleven_multilingual_v2',
-      voice_settings: {
-        stability: 0.5,
-        similarity_boost: 0.8,
-        speed: speed,
-      },
-    }),
-  })
-
-  if (state.cancelled) return
-
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}))
-    const msg =
-      errData?.detail?.message || `ElevenLabs API Hatası (HTTP ${res.status})`
-    throw new Error(msg)
   }
 
-  const data: ElevenLabsTimestampResponse = await res.json()
+  console.log(`[ElevenLabs] voiceId="${voiceId}" rate=${userRate} text="${text.slice(0, 30)}..."`)
+
+  // 1. Hassas zaman damgalı endpoint'i dene
+  try {
+    const timestampRes = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/with-timestamps`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+      },
+    )
+
+    console.log(`[ElevenLabs] with-timestamps HTTP ${timestampRes.status} (voiceId=${voiceId})`)
+
+    if (timestampRes.ok) {
+      const data: ElevenLabsTimestampResponse = await timestampRes.json()
+      if (data.audio_base64) {
+        audioUrl = `data:audio/mp3;base64,${data.audio_base64}`
+        alignment = data.alignment
+        console.log(`[ElevenLabs] ✅ Başarılı — voiceId="${voiceId}" ses hazır`)
+      }
+    } else {
+      const errBody = await timestampRes.text().catch(() => '')
+      console.warn(`[ElevenLabs] with-timestamps HATA (${timestampRes.status}):`, errBody)
+    }
+  } catch (err) {
+    console.warn('[ElevenLabs] with-timestamps isteği başarısız oldu:', err)
+  }
+
+  // 2. Eğer zaman damgalı endpoint başarısız olduysa, standart TTS akışını çağır
+  if (!audioUrl) {
+    const standardRes = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': apiKey,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+      },
+    )
+
+    if (!standardRes.ok) {
+      const errData = await standardRes.json().catch(() => ({}))
+      const msg =
+        errData?.detail?.message ||
+        errData?.detail ||
+        `ElevenLabs API Hatası (HTTP ${standardRes.status})`
+      throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg))
+    }
+
+    const blob = await standardRes.blob()
+    audioUrl = URL.createObjectURL(blob)
+  }
+
   if (state.cancelled) return
 
-  const audioSrc = `data:audio/mp3;base64,${data.audio_base64}`
-  const audio = new Audio(audioSrc)
+  const audio = new Audio(audioUrl)
+  // Tarayıcı yerel ses hız ayarı
+  audio.playbackRate = userRate
   activeAudio = audio
 
-  const alignment = data.alignment
   let nextIdx = 0
 
   audio.onplay = () => {
@@ -289,7 +331,8 @@ async function speakElevenLabs(
       const times = alignment.character_start_times_seconds
       const trackAlignment = () => {
         if (state.cancelled || !activeAudio) return
-        const current = activeAudio.currentTime
+        // Oynatma hızı ile orantılı zaman takibi
+        const current = activeAudio.currentTime * (activeAudio.playbackRate || 1)
         while (nextIdx < times.length && current >= times[nextIdx]) {
           opts.onBoundary?.(nextIdx)
           nextIdx++
@@ -300,7 +343,6 @@ async function speakElevenLabs(
       }
       activeRafId = requestAnimationFrame(trackAlignment)
     } else {
-      // Zaman damgası dönmezse süreye göre orantısal takip
       const trackProgress = () => {
         if (state.cancelled || !activeAudio) return
         if (activeAudio.duration > 0) {
@@ -321,6 +363,9 @@ async function speakElevenLabs(
       cancelAnimationFrame(activeRafId)
       activeRafId = null
     }
+    if (audioUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(audioUrl)
+    }
     activeAudio = null
     if (!state.cancelled) {
       opts.onEnd?.()
@@ -331,6 +376,9 @@ async function speakElevenLabs(
     if (activeRafId !== null) {
       cancelAnimationFrame(activeRafId)
       activeRafId = null
+    }
+    if (audioUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(audioUrl)
     }
     activeAudio = null
     if (!state.cancelled) {
@@ -424,10 +472,11 @@ export function speak(
   }
 
   if (isElevenLabsConfigured()) {
-    speakElevenLabs(text, opts, state, voice).catch((err) => {
+    speakElevenLabs(text, opts, state).catch((err) => {
       if (state.cancelled) return
-      console.warn('ElevenLabs ses çalınamadı, yerel sese dönülüyor:', err)
-      speakWebSpeech(text, voice, opts, state)
+      console.error('[ElevenLabs] ❌ Ses çalınamadı — Windows TTS KULLANILMIYOR:', err?.message || err)
+      opts.onError?.(err?.message || 'ElevenLabs ses çalma hatası — lütfen konsoldan detayı inceleyin')
+      // Windows TTS'e DÜŞME — sadece hata bildir
     })
   } else {
     speakWebSpeech(text, voice, opts, state)
@@ -441,7 +490,7 @@ export function speak(
  */
 export function previewVoice(
   voiceId: string,
-  sampleText: string = 'Merhaba arkadaşlar, bugünkü dersimize hoş geldiniz. Hazırsanız başlayalım.',
+  sampleText: string = 'Merhaba arkadaşlar! Bugünkü dersimizde gizli hataları bulacağız. Hazırsanız başlayalım.',
   rate?: number,
   onEnd?: () => void,
   onError?: (err: string) => void,

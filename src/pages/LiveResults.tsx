@@ -222,22 +222,18 @@ export default function LiveResults() {
       exit={{ opacity: 0 }}
       className="mx-auto max-w-6xl px-5 py-12 sm:px-6"
     >
-      {/* Üst Navigasyon & İndirme Butonu */}
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+      {/* Üst Navigasyon */}
+      <div className="mb-6 flex items-center justify-between">
         <button
           onClick={() => nav('/hoca')}
           className="rounded-sm text-sm font-medium text-ink-muted transition-colors hover:text-ink"
         >
           ← Panele dön
         </button>
-
-        <Button3D tone="success" size="md" onClick={handleExport} className="shadow-lg">
-          📥 Excel Raporu İndir (.xlsx / .csv)
-        </Button3D>
       </div>
 
-      {/* Başlık Alanı */}
-      <div className="mb-8 flex flex-wrap items-end justify-between gap-4 rounded-sm border border-paper-edge bg-paper-card p-6">
+      {/* Başlık Alanı & Excel İndirme Butonu */}
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4 rounded-sm border border-paper-edge bg-paper-card p-6 shadow-sm">
         <div>
           <span className="label-chip border-paper-edge bg-paper-deep text-ink">
             {lesson.subject?.toUpperCase() || 'DERS'} · OTURUM RAPORU
@@ -251,8 +247,8 @@ export default function LiveResults() {
           </p>
         </div>
 
-        <Button3D tone="success" onClick={handleExport} className="shrink-0">
-          📥 Tüm Verileri İndir
+        <Button3D tone="success" size="md" onClick={handleExport} className="shrink-0 shadow-md">
+          📥 Excel Raporu İndir (.xlsx)
         </Button3D>
       </div>
 

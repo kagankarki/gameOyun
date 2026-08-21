@@ -213,29 +213,29 @@ export default function TeacherDashboard() {
                     <div className="mt-auto flex flex-wrap items-center gap-2">
                       <Button3D
                         size="sm"
-                        tone="danger"
-                        onClick={() => nav(`/hoca/amfi/${l.id}`)}
-                        disabled={traps === 0}
-                        title={
-                          traps === 0
-                            ? 'Önce en az bir hatalı bölüm işaretle'
-                            : 'TTS zili modu'
-                        }
-                      >
-                        Amfi v1
-                      </Button3D>
-                      <Button3D
-                        size="sm"
                         tone="gold"
                         onClick={() => nav(`/hoca/amfi-setup/${l.id}`)}
                         disabled={traps === 0}
                         title={
                           traps === 0
                             ? 'Önce en az bir hatalı bölüm işaretle'
-                            : 'Not yazma modu (Gemini)'
+                            : 'Kesintisiz sesli anlatım ve 5 şıklı soru modu'
                         }
                       >
-                        Amfi 2.0
+                        🎙️ Canlı Amfi
+                      </Button3D>
+                      <Button3D
+                        size="sm"
+                        tone="ghost"
+                        onClick={() => nav(`/hoca/amfi/${l.id}`)}
+                        disabled={traps === 0}
+                        title={
+                          traps === 0
+                            ? 'Önce en az bir hatalı bölüm işaretle'
+                            : 'Parça parça okunan klasik mod'
+                        }
+                      >
+                        Klasik Mod
                       </Button3D>
                       <Button3D size="sm" onClick={() => nav(`/hoca/ders/${l.id}`)}>
                         Düzenle

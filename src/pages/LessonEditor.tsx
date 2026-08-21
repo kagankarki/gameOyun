@@ -350,7 +350,7 @@ export default function LessonEditor() {
             onClick={amfiBaslat}
             disabled={saving || starting || !wrongs.length || !script.trim()}
           >
-            {starting ? 'Başlatılıyor…' : 'Amfi 2.0 Başlat'}
+            {starting ? 'Başlatılıyor…' : '🎙️ Canlı Dersi Başlat'}
           </Button3D>
         </div>
       </div>
@@ -719,7 +719,7 @@ export default function LessonEditor() {
             onClick={amfiBaslat}
             disabled={saving || starting || !wrongs.length || !script.trim()}
           >
-            {starting ? 'Oturum Açılıyor…' : 'Amfi 2.0 Oturumunu Aç'}
+            {starting ? 'Oturum Açılıyor…' : '🎙️ Canlı Dersi Başlat'}
           </Button3D>
         </div>
       </div>

@@ -6,6 +6,7 @@ import QRCode from 'qrcode'
 import Button3D from '@/components/Button3D'
 import Loader from '@/components/Loader'
 import { RatingSummary } from '@/components/Rating'
+import VoiceSelector from '@/components/VoiceSelector'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/components/Toast'
 import * as api from '@/lib/api'
@@ -352,6 +353,11 @@ export default function AmfiHost() {
               </Button3D>
             </div>
           </div>
+        </div>
+
+        {/* Seslendirme & Ton Seçici */}
+        <div className="mt-6">
+          <VoiceSelector onSelect={() => getTurkishVoice().then((v) => v && setVoice(v))} />
         </div>
       </div>
     )

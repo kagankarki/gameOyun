@@ -21,6 +21,7 @@ import Button3D from '@/components/Button3D'
 import Loader from '@/components/Loader'
 import { RatingSummary } from '@/components/Rating'
 import { useToast } from '@/components/Toast'
+import VoiceSelector from '@/components/VoiceSelector'
 import { useAuth } from '@/context/AuthContext'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
@@ -459,6 +460,11 @@ export default function AmfiHostV2() {
               </Button3D>
             </div>
           </div>
+        </div>
+
+        {/* Seslendirme & Ton Seçici */}
+        <div className="mt-6">
+          <VoiceSelector onSelect={() => getTurkishVoice().then((v) => v && setVoice(v))} />
         </div>
       </div>
     )

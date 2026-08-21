@@ -51,13 +51,13 @@ export const MAX_SPEED_BONUS = 30
 export const GRACE_MS = 1500
 
 /**
- * Bir hata okunduktan sonra öğrencinin basabileceği süre.
+ * Bir hata okunduktan sonra öğrencinin basabileceği süre (6 saniye).
  *
- * Sürekli okumada metin durmuyor; öğrenci hatayı duyup "dur, bu yanlıştı"
- * diye düşünene kadar birkaç saniye geçiyor. Bu pencere kapanınca basış
- * artık o hataya sayılmaz.
+ * Sürekli okumada metin durmuyor; öğrenci hatayı duyduğu an basar.
+ * 6 saniye içinde en hızlı basan en yüksek hız bonusunu alır, süre
+ * geçtikçe puan azalır. 6 saniye dolunca pencere kapanır.
  */
-export const CATCH_WINDOW_MS = 8_000
+export const CATCH_WINDOW_MS = 6_000
 
 /**
  * Türkçe TTS 1x hızda kabaca 14 karakter/sn okuyor.
@@ -230,10 +230,12 @@ export async function resumeOrCreateSession(
   lesson: Lesson,
   teacherId: string,
   teacherName: string,
+  opts?: SessionOptions,
 ): Promise<LiveSession> {
-  const existing = await findActiveSession(lesson.id, teacherId, 1)
+  const version = opts?.version ?? 1
+  const existing = await findActiveSession(lesson.id, teacherId, version)
   if (existing) return existing
-  return createSession(lesson, teacherId, teacherName, { version: 1 })
+  return createSession(lesson, teacherId, teacherName, { version, ...opts })
 }
 
 export async function saveSession(s: LiveSession): Promise<void> {

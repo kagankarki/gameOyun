@@ -22,10 +22,12 @@ import Loader from '@/components/Loader'
 import { RatingSummary } from '@/components/Rating'
 import { useToast } from '@/components/Toast'
 import { useAuth } from '@/context/AuthContext'
+import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
 import { cancelSpeech, getTurkishVoice, isSpeechSupported, speak } from '@/lib/speech'
 import type {
   Catch,
+  Lesson,
   LiveSession,
   Participant,
   SessionRating,
@@ -45,6 +47,7 @@ export default function AmfiHostV2() {
   const toast = useToast()
   const { user } = useAuth()
 
+  const [lesson, setLesson] = useState<Lesson | null>(null)
   const [session, setSession] = useState<LiveSession | null>(null)
   const [secret, setSecret] = useState<SessionSecret | null>(null)
   const [participants, setParticipants] = useState<Participant[]>([])
@@ -84,19 +87,49 @@ export default function AmfiHostV2() {
   useEffect(() => {
     if (sessionIdParam) {
       setSessionId(sessionIdParam)
+      if (lessonId) {
+        api.getLesson(lessonId).then((l) => l && setLesson(l)).catch(() => {})
+      }
       return
     }
-    if (!lessonId || !user?.uid) return
+
+    if (!lessonId || !user?.uid) {
+      setLoading(false)
+      return
+    }
+
     let alive = true
-    ses.findActiveSession(lessonId, user.uid, 2).then((s) => {
-      if (!alive) return
-      setSessionId(s?.id ?? null)
-      if (!s) setLoading(false)
-    })
+    const uidValue = user.uid
+
+    ;(async () => {
+      try {
+        const l = await api.getLesson(lessonId)
+        if (!alive) return
+        setLesson(l)
+        if (!l) {
+          setLoading(false)
+          return
+        }
+
+        // V2 açık oturumu varsa onu bul
+        const active = await ses.findActiveSession(lessonId, uidValue, 2)
+        if (!alive) return
+        if (active) {
+          setSession(active)
+          setSessionId(active.id)
+        }
+        setLoading(false)
+      } catch (err) {
+        console.error(err)
+        toast('Oturum yüklenirken hata oluştu: ' + (err as Error).message, 'error')
+        if (alive) setLoading(false)
+      }
+    })()
+
     return () => {
       alive = false
     }
-  }, [sessionIdParam, lessonId, user?.uid])
+  }, [sessionIdParam, lessonId, user?.uid, toast])
 
   /* ── Canlı dinleyiciler ── */
   useEffect(() => {
@@ -165,12 +198,15 @@ export default function AmfiHostV2() {
         // Pencere TAM BURADA açılır — speak() ile ses arasında ~1 sn var
         const t = Date.now()
         marksRef.current = [{ t, i: 0 }]
-        void ses.saveSession({
-          ...sessionRef.current!,
-          phase: 'speaking',
-          blockStartedAt: t,
-          blockDurationMs: 0,
-        })
+        const cur = sessionRef.current
+        if (cur) {
+          void ses.saveSession({
+            ...cur,
+            phase: 'speaking',
+            blockStartedAt: t,
+            blockDurationMs: 0,
+          })
+        }
       },
       onBoundary: (i) => {
         marksRef.current.push({ t: Date.now(), i })
@@ -229,7 +265,7 @@ export default function AmfiHostV2() {
         }
       })
     }
-  }, [catches])
+  }, [catches, secret, session?.phase])
 
   /* ── Gelen cevapları notla ── */
   useEffect(() => {
@@ -256,7 +292,7 @@ export default function AmfiHostV2() {
         }
       })
     }
-  }, [catches])
+  }, [catches, secret])
 
   const bitir = async () => {
     if (!window.confirm('Dersi bitirmek istediğine emin misin?')) return
@@ -266,7 +302,7 @@ export default function AmfiHostV2() {
     if (!s) return
     await queue.current
     await ses.markMissedWrongs(s.wrongCount, partsRef.current, catchesRef.current)
-    await ses.saveSession({ ...sessionRef.current!, phase: 'ended' })
+    await ses.saveSession({ ...s, phase: 'ended' })
   }
 
   /* ── QR ── */
@@ -293,7 +329,8 @@ export default function AmfiHostV2() {
 
   if (loading) return <Loader label="Oturum yükleniyor…" />
 
-  if (!session)
+  if (!session) {
+    const targetLessonId = lessonId || lesson?.id
     return (
       <div className="grid min-h-[60dvh] place-items-center px-6">
         <div className="file-card p-10 text-center">
@@ -302,7 +339,11 @@ export default function AmfiHostV2() {
             Bu ders için açık bir amfi oturumu yok.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <Button3D onClick={() => nav(`/hoca/amfi-setup/${lessonId}`)}>Oyunu Hazırla</Button3D>
+            {targetLessonId ? (
+              <Button3D onClick={() => nav(`/hoca/amfi-setup/${targetLessonId}`)}>
+                Oyunu Hazırla
+              </Button3D>
+            ) : null}
             <Button3D tone="ghost" onClick={() => nav('/hoca')}>
               Panele Dön
             </Button3D>
@@ -310,6 +351,7 @@ export default function AmfiHostV2() {
         </div>
       </div>
     )
+  }
 
   const joinUrl = `${window.location.origin}/amfi/${session.code}`
 
@@ -408,6 +450,7 @@ export default function AmfiHostV2() {
 
   /* ══════════════ BİTİŞ ══════════════ */
   if (session.phase === 'ended') {
+    const reportLessonId = lessonId || session.lessonId || lesson?.id
     return (
       <div className="mx-auto max-w-3xl space-y-8 px-5 py-12 sm:px-6">
         <div className="file-card overflow-hidden">
@@ -448,7 +491,11 @@ export default function AmfiHostV2() {
         <RatingSummary ratings={ratings} />
 
         <div className="flex flex-wrap justify-center gap-3">
-          <Button3D onClick={() => nav(`/hoca/sonuclar/${lessonId}`)}>Ayrıntılı Rapor</Button3D>
+          {reportLessonId ? (
+            <Button3D onClick={() => nav(`/hoca/sonuclar/${reportLessonId}`)}>
+              Ayrıntılı Rapor
+            </Button3D>
+          ) : null}
           <Button3D tone="ghost" onClick={() => nav('/hoca')}>
             Panele Dön
           </Button3D>
@@ -459,9 +506,12 @@ export default function AmfiHostV2() {
 
   /* ══════════════ OKUMA ══════════════ */
   const okunan = script.slice(Math.max(0, charIndex - GORUNEN_ONCE), charIndex)
-  const suAn = script.slice(charIndex).split(' ')[0] ?? ''
+  const match = script.slice(charIndex).match(/^\S+/)
+  const suAn = match ? match[0] : (script.slice(charIndex).split(' ')[0] ?? '')
   const gelecek = script.slice(charIndex + suAn.length, charIndex + GORUNEN_SONRA)
-  const ilerleme = session.scriptLength ? Math.round((charIndex / session.scriptLength) * 100) : 0
+  const ilerleme = session.scriptLength
+    ? Math.min(100, Math.round((charIndex / session.scriptLength) * 100))
+    : 0
   const bitiyor = session.phase === 'grace'
 
   return (
@@ -512,7 +562,7 @@ export default function AmfiHostV2() {
           <div className="file-card-tabbed border-l-ink p-8 sm:p-10">
             <p className="font-display text-[26px] leading-[1.5] sm:text-[32px]">
               <span className="text-ink-faint">{okunan}</span>
-              <span className="bg-flag-soft font-semibold text-ink">{suAn}</span>
+              {suAn && <span className="bg-flag-soft font-semibold text-ink px-1 rounded-xs">{suAn}</span>}
               <span className="text-ink">{gelecek}</span>
             </p>
           </div>

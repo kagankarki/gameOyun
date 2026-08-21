@@ -151,7 +151,7 @@ export default function TeacherDashboard() {
       ) : (
         <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
           {mine.map((l, i) => {
-            const traps = l.blocks.filter((b) => b.isWrong).length
+            const traps = l.wrongBlocks?.length ?? l.blocks?.filter((b) => b.isWrong).length ?? 0
             const plays = sessionsByLesson.get(l.id)?.length ?? 0
 
             return (

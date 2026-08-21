@@ -28,6 +28,11 @@ export interface Lesson {
   subject: string
   teacherId: string
   teacherName: string
+  /** Kesintisiz okuma metni */
+  script?: string
+  /** Metindeki işaretli yanlışlar */
+  wrongBlocks?: WrongBlock[]
+  /** Eski blok modeli ile uyumluluk için */
   blocks: Block[]
   /** true ise öğrenciler girip oynayabilir */
   isLive: boolean
@@ -157,6 +162,8 @@ export interface WrongBlock {
   /** Sürekli okumada ham metindeki karakter aralığı */
   start: number
   end: number
+  /** Zorluk derecesi */
+  difficulty?: 'kolay' | 'orta' | 'zor'
   /** Yakalayan öğrenciye sorulan ek soru — hoca hazırlık ekranında yazar */
   followUp?: FollowUpQuestion
 }
@@ -167,11 +174,12 @@ export interface WrongBlock {
  */
 export interface FollowUpQuestion {
   question: string
-  /** 2–5 şık */
+  /** 5 şık (A, B, C, D, E) */
   options: string[]
   correctIndex: number
   /** Doğru bilirse eklenecek puan */
   bonus: number
+  difficulty?: 'kolay' | 'orta' | 'zor'
 }
 
 export interface Participant {

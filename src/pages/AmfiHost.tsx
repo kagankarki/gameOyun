@@ -66,18 +66,24 @@ export default function AmfiHost() {
 
     let alive = true
     ;(async () => {
-      const l = await api.getLesson(lessonId)
-      if (!alive) return
-      setLesson(l)
-      if (!l) {
+      try {
+        const l = await api.getLesson(lessonId)
+        if (!alive) return
+        setLesson(l)
+        if (!l) {
+          setLoading(false)
+          return
+        }
+        // Yenilemede yeni kod üretme — açık oturum varsa onu sürdür
+        const s = await ses.resumeOrCreateSession(l, uidValue, userName ?? 'Öğretim Üyesi')
+        if (!alive) return
+        setSession(s)
         setLoading(false)
-        return
+      } catch (err) {
+        console.error(err)
+        toast('Oturum başlatılırken hata oluştu: ' + (err as Error).message, 'error')
+        if (alive) setLoading(false)
       }
-      // Yenilemede yeni kod üretme — açık oturum varsa onu sürdür
-      const s = await ses.resumeOrCreateSession(l, uidValue, userName ?? 'Öğretim Üyesi')
-      if (!alive) return
-      setSession(s)
-      setLoading(false)
     })()
 
     return () => {

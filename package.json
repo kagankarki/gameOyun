@@ -6,6 +6,7 @@
   "description": "Gazi Üniversitesi x Prof. Tuncay Peker - Hatayı Yakala interaktif ders platformu",
   "scripts": {
     "dev": "vite --host",
+    "tunnel": "npx localtunnel --port 5173",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"

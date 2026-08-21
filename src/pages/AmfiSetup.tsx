@@ -26,12 +26,13 @@ import { EASE } from '@/lib/motion'
 import type { FollowUpQuestion, Lesson, WrongBlock } from '@/lib/types'
 import { cx } from '@/lib/utils'
 
-/** Yeni bir hata işaretlenirken formun başlangıç hâli */
+/** Yeni bir hata işaretlenirken formun başlangıç hâli (5 şıklı) */
 const BOS_SORU: FollowUpQuestion = {
   question: '',
-  options: ['', '', '', ''],
+  options: ['', '', '', '', ''],
   correctIndex: 0,
   bonus: 50,
+  difficulty: 'orta',
 }
 
 export default function AmfiSetup() {
@@ -64,7 +65,14 @@ export default function AmfiSetup() {
     api.getLesson(lessonId).then((l) => {
       if (!alive) return
       setLesson(l)
-      if (l?.blocks?.length) setScript(l.blocks.map((b) => b.text).join('\n\n'))
+      if (l?.script) {
+        setScript(l.script)
+      } else if (l?.blocks?.length) {
+        setScript(l.blocks.map((b) => b.text).join('\n\n'))
+      }
+      if (l?.wrongBlocks?.length) {
+        setWrongs(l.wrongBlocks)
+      }
       setLoading(false)
     })
     return () => {
@@ -119,9 +127,17 @@ export default function AmfiSetup() {
         toast(r.error ?? 'Soru üretilemedi.', 'error')
         return
       }
-      setSoru(r.question)
+      const opts = [...r.question.options]
+      while (opts.length < 5) opts.push('')
+
+      setSoru({
+        ...r.question,
+        options: opts.slice(0, 5),
+        difficulty: zorluk,
+      })
       setSoruAcik(true)
-      toast('Soru üretildi — kontrol edip düzeltebilirsin.', 'success')
+      const modelName = r.modelUsed ? ` (${r.modelUsed})` : ''
+      toast(`5 şıklı soru üretildi${modelName} — kontrol edip düzeltebilirsin.`, 'success')
     } finally {
       setUretiliyor(false)
     }
@@ -395,9 +411,9 @@ export default function AmfiSetup() {
                           aria-label={`${i + 1}. şık doğru`}
                           onClick={() => setSoru({ ...soru, correctIndex: i })}
                           className={cx(
-                            'grid h-8 w-8 shrink-0 place-items-center rounded-sm border-2 font-mono text-xs font-bold transition-colors',
+                            'grid h-8 w-8 shrink-0 place-items-center rounded-sm border-2 font-mono text-xs font-bold transition-all',
                             soru.correctIndex === i
-                              ? 'border-verify bg-verify text-white'
+                              ? 'border-verify bg-verify text-white shadow-md ring-2 ring-verify/30'
                               : 'border-paper-edge bg-paper-card text-ink-muted hover:border-ink',
                           )}
                         >
@@ -410,9 +426,17 @@ export default function AmfiSetup() {
                             next[i] = e.target.value
                             setSoru({ ...soru, options: next })
                           }}
-                          className="field"
+                          className={cx(
+                            'field',
+                            soru.correctIndex === i && 'border-verify bg-verify-soft/25 font-medium text-ink ring-1 ring-verify',
+                          )}
                           placeholder={`${i + 1}. şık`}
                         />
+                        {soru.correctIndex === i && (
+                          <span className="shrink-0 font-mono text-[11px] font-bold text-verify animate-pulse">
+                            ✓ DOĞRU ŞIK
+                          </span>
+                        )}
                       </div>
                     ))}
                   </div>

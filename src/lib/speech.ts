@@ -1,20 +1,37 @@
 /**
- * TTS katmanı — Amfi modunda ders notunu sesli okur.
+ * TTS Katmanı — Amfi modunda ders notunu sesli okur.
  *
- * Ölçülmüş davranışlar (bu proje için doğrulandı):
- *  • speak() ile sesin gerçekten başlaması arasında ~1 sn gecikme var.
- *    Bu yüzden zil penceresi onStart ile açılmalı, speak() çağrısıyla değil.
- *  • onBoundary her kelimede charIndex ile tetikleniyor → canlı kelime vurgusu.
- *  • Süre tahmin edilmez; gerçek onEnd beklenir.
+ * 1. Öncelik: ElevenLabs Doğal & Akıcı Yapay Zeka Türkçe TTS (Multilingual v2)
+ *    - Karakter & kelime bazlı hassas zaman damgaları (with-timestamps) ile senkron takip.
+ *    - İnsan tonlamasında son derece akıcı ve doğal Türkçe seslendirme.
+ * 2. Yedek: Tarayıcı Web Speech API (speechSynthesis)
  */
 
-export const isSpeechSupported = () =>
+interface ElevenLabsAlignment {
+  characters: string[]
+  character_start_times_seconds: number[]
+  character_end_times_seconds: number[]
+}
+
+interface ElevenLabsTimestampResponse {
+  audio_base64: string
+  alignment?: ElevenLabsAlignment
+  normalized_alignment?: ElevenLabsAlignment
+}
+
+export const isElevenLabsConfigured = () =>
+  Boolean(import.meta.env.VITE_ELEVENLABS_API_KEY?.trim())
+
+const isSpeechSynthesisSupported = () =>
   typeof window !== 'undefined' && 'speechSynthesis' in window
+
+export const isSpeechSupported = () =>
+  isElevenLabsConfigured() || isSpeechSynthesisSupported()
 
 /** Sesler asenkron yüklenir; ilk çağrıda liste boş dönebilir. */
 function loadVoices(): Promise<SpeechSynthesisVoice[]> {
   return new Promise((resolve) => {
-    if (!isSpeechSupported()) return resolve([])
+    if (!isSpeechSynthesisSupported()) return resolve([])
 
     const ready = speechSynthesis.getVoices()
     if (ready.length) return resolve(ready)
@@ -32,8 +49,18 @@ function loadVoices(): Promise<SpeechSynthesisVoice[]> {
   })
 }
 
-/** tr-TR sesini bulur. Bulamazsa null döner (u.lang = 'tr-TR' varsayılan sesi kullanır). */
+/** tr-TR sesini bulur veya ElevenLabs AI sesini döner */
 export async function getTurkishVoice(): Promise<SpeechSynthesisVoice | null> {
+  if (isElevenLabsConfigured()) {
+    return {
+      name: 'ElevenLabs AI Türkçe (Doğal / Multilingual v2)',
+      lang: 'tr-TR',
+      default: true,
+      localService: false,
+      voiceURI: 'elevenlabs-tr',
+    } as SpeechSynthesisVoice
+  }
+
   const voices = await loadVoices()
   return (
     voices.find(
@@ -55,7 +82,7 @@ export interface SpeakOptions {
   /** Konuşma bittiğinde (iptal edilmişse çağrılmaz) */
   onEnd?: () => void
   onError?: (message: string) => void
-  /** 0.1 – 10, varsayılan 0.7 (%30 yavaşlatıldı) */
+  /** 0.1 – 10, varsayılan 0.85 (ElevenLabs) / 0.7 (Web Speech) */
   rate?: number
 }
 
@@ -64,30 +91,166 @@ export interface SpeakHandle {
   cancel: () => void
 }
 
+let activeAudio: HTMLAudioElement | null = null
+let activeRafId: number | null = null
+
+/** Sayfadan ayrılırken veya yeni okuma başlarken sesi susturur */
+export const cancelSpeech = () => {
+  if (activeRafId !== null) {
+    cancelAnimationFrame(activeRafId)
+    activeRafId = null
+  }
+  if (activeAudio) {
+    activeAudio.pause()
+    activeAudio.currentTime = 0
+    activeAudio.src = ''
+    activeAudio = null
+  }
+  if (isSpeechSynthesisSupported()) {
+    speechSynthesis.cancel()
+  }
+}
+
 /**
- * Verilen metni Türkçe sesle okur.
- * Tarayıcılar ses için kullanıcı hareketi ister — ilk çağrı bir tıklama
- * işleyicisinin içinden yapılmalı.
+ * ElevenLabs API ile doğal Türkçe seslendirme
  */
-export function speak(
+async function speakElevenLabs(
   text: string,
-  voice: SpeechSynthesisVoice | null,
-  opts: SpeakOptions = {},
-): SpeakHandle {
-  if (!isSpeechSupported()) {
-    opts.onError?.('Bu tarayıcı sesli okumayı desteklemiyor.')
-    return { cancel: () => {} }
+  opts: SpeakOptions,
+  state: { cancelled: boolean },
+  voiceFallback: SpeechSynthesisVoice | null,
+) {
+  const apiKey = import.meta.env.VITE_ELEVENLABS_API_KEY?.trim()
+  const voiceId =
+    import.meta.env.VITE_ELEVENLABS_VOICE_ID?.trim() || 'pNInz6ovEkqRGWrWwmOT' // Adam / Türkçe uyumlu ses
+
+  // Doğal ve sakin okuma hızı (ElevenLabs için 0.85 ideal ve akıcıdır)
+  const speed = opts.rate ? Math.min(Math.max(opts.rate, 0.7), 1.2) : 0.85
+
+  const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/with-timestamps`
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'xi-api-key': apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      text,
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: {
+        stability: 0.5,
+        similarity_boost: 0.8,
+        speed: speed,
+      },
+    }),
+  })
+
+  if (state.cancelled) return
+
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}))
+    const msg =
+      errData?.detail?.message || `ElevenLabs API Hatası (HTTP ${res.status})`
+    throw new Error(msg)
   }
 
-  // Önceki konuşma sürüyorsa temizle
-  speechSynthesis.cancel()
+  const data: ElevenLabsTimestampResponse = await res.json()
+  if (state.cancelled) return
+
+  const audioSrc = `data:audio/mp3;base64,${data.audio_base64}`
+  const audio = new Audio(audioSrc)
+  activeAudio = audio
+
+  const alignment = data.alignment
+  let nextIdx = 0
+
+  audio.onplay = () => {
+    if (state.cancelled) return
+    opts.onStart?.()
+
+    if (alignment?.character_start_times_seconds?.length) {
+      const times = alignment.character_start_times_seconds
+      const trackAlignment = () => {
+        if (state.cancelled || !activeAudio) return
+        const current = activeAudio.currentTime
+        while (nextIdx < times.length && current >= times[nextIdx]) {
+          opts.onBoundary?.(nextIdx)
+          nextIdx++
+        }
+        if (!activeAudio.paused && !activeAudio.ended) {
+          activeRafId = requestAnimationFrame(trackAlignment)
+        }
+      }
+      activeRafId = requestAnimationFrame(trackAlignment)
+    } else {
+      // Zaman damgası dönmezse süreye göre orantısal takip
+      const trackProgress = () => {
+        if (state.cancelled || !activeAudio) return
+        if (activeAudio.duration > 0) {
+          const ratio = activeAudio.currentTime / activeAudio.duration
+          const charPos = Math.min(Math.floor(ratio * text.length), text.length - 1)
+          opts.onBoundary?.(charPos)
+        }
+        if (!activeAudio.paused && !activeAudio.ended) {
+          activeRafId = requestAnimationFrame(trackProgress)
+        }
+      }
+      activeRafId = requestAnimationFrame(trackProgress)
+    }
+  }
+
+  audio.onended = () => {
+    if (activeRafId !== null) {
+      cancelAnimationFrame(activeRafId)
+      activeRafId = null
+    }
+    activeAudio = null
+    if (!state.cancelled) {
+      opts.onEnd?.()
+    }
+  }
+
+  audio.onerror = () => {
+    if (activeRafId !== null) {
+      cancelAnimationFrame(activeRafId)
+      activeRafId = null
+    }
+    activeAudio = null
+    if (!state.cancelled) {
+      opts.onError?.('ElevenLabs ses çalma hatası oluştu.')
+    }
+  }
+
+  try {
+    await audio.play()
+  } catch (err: any) {
+    if (state.cancelled) return
+    throw err
+  }
+}
+
+/**
+ * Web Speech API (Tarayıcı yerel ses motoru — Yedek)
+ */
+function speakWebSpeech(
+  text: string,
+  voice: SpeechSynthesisVoice | null,
+  opts: SpeakOptions,
+  state: { cancelled: boolean },
+) {
+  if (!isSpeechSynthesisSupported()) {
+    opts.onError?.('Bu tarayıcı sesli okumayı desteklemiyor.')
+    return
+  }
 
   const u = new SpeechSynthesisUtterance(text)
   u.lang = 'tr-TR'
   u.rate = opts.rate ?? 0.7
-  if (voice) u.voice = voice
+  if (voice && voice.voiceURI !== 'elevenlabs-tr') {
+    u.voice = voice
+  }
 
-  let cancelled = false
   let heartbeat: number | undefined
 
   const stopHeartbeat = () => {
@@ -98,9 +261,7 @@ export function speak(
   }
 
   u.onstart = () => {
-    if (cancelled) return
-    // Chrome uzun metinlerde ~15 sn sonra konuşmayı kesiyor.
-    // Düzenli resume() çağrısı bunu önler.
+    if (state.cancelled) return
     heartbeat = window.setInterval(() => {
       if (speechSynthesis.speaking && !speechSynthesis.paused) speechSynthesis.resume()
     }, 8000)
@@ -108,36 +269,54 @@ export function speak(
   }
 
   u.onboundary = (e) => {
-    if (cancelled) return
+    if (state.cancelled) return
     opts.onBoundary?.(e.charIndex)
   }
 
   u.onend = () => {
     stopHeartbeat()
-    // cancel() bazı tarayıcılarda onend tetikler — dersi yanlışlıkla
-    // ilerletmemek için burada ayırıyoruz.
-    if (cancelled) return
+    if (state.cancelled) return
     opts.onEnd?.()
   }
 
   u.onerror = (e) => {
     stopHeartbeat()
-    if (cancelled || e.error === 'interrupted' || e.error === 'canceled') return
+    if (state.cancelled || e.error === 'interrupted' || e.error === 'canceled') return
     opts.onError?.(`Sesli okuma hatası: ${e.error}`)
   }
 
   speechSynthesis.speak(u)
+}
 
-  return {
+/**
+ * Verilen metni ElevenLabs (öncelikli) veya yerel Türkçe sesle okur.
+ */
+export function speak(
+  text: string,
+  voice: SpeechSynthesisVoice | null,
+  opts: SpeakOptions = {},
+): SpeakHandle {
+  cancelSpeech()
+
+  const state = { cancelled: false }
+
+  const handle: SpeakHandle = {
     cancel: () => {
-      cancelled = true
-      stopHeartbeat()
-      speechSynthesis.cancel()
+      state.cancelled = true
+      cancelSpeech()
     },
   }
+
+  if (isElevenLabsConfigured()) {
+    speakElevenLabs(text, opts, state, voice).catch((err) => {
+      if (state.cancelled) return
+      console.warn('ElevenLabs ses çalınamadı, yerel sese dönülüyor:', err)
+      speakWebSpeech(text, voice, opts, state)
+    })
+  } else {
+    speakWebSpeech(text, voice, opts, state)
+  }
+
+  return handle
 }
 
-/** Sayfadan ayrılırken sesi susturmak için */
-export const cancelSpeech = () => {
-  if (isSpeechSupported()) speechSynthesis.cancel()
-}

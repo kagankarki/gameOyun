@@ -24,7 +24,13 @@ import { useToast } from '@/components/Toast'
 import { useAuth } from '@/context/AuthContext'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
-import { cancelSpeech, getTurkishVoice, isSpeechSupported, speak } from '@/lib/speech'
+import {
+  cancelSpeech,
+  getTurkishVoice,
+  isElevenLabsConfigured,
+  isSpeechSupported,
+  speak,
+} from '@/lib/speech'
 import type {
   Catch,
   Lesson,
@@ -359,10 +365,20 @@ export default function AmfiHostV2() {
   if (session.phase === 'lobby') {
     return (
       <div className="mx-auto max-w-6xl px-5 py-10 sm:px-6">
-        <p className="label">AMFİ OTURUMU · KESİNTİSİZ OKUMA</p>
-        <h1 className="mt-3 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-          {session.lessonTitle}
-        </h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="label">AMFİ OTURUMU · KESİNTİSİZ OKUMA</p>
+            <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
+              {session.lessonTitle}
+            </h1>
+          </div>
+          {isElevenLabsConfigured() && (
+            <div className="flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-1.5 text-xs font-semibold text-emerald-800">
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              ElevenLabs Doğal AI Seslendirme Aktif
+            </div>
+          )}
+        </div>
         <div className="rule mt-7" />
 
         {voiceError && (

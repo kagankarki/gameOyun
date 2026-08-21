@@ -64,12 +64,12 @@ export default function Navbar() {
       >
         <div className="mx-auto flex h-[68px] max-w-7xl items-center gap-4 px-4 sm:px-6">
           <Link to="/" className="group flex items-center gap-3">
-            <Logo size={36} />
+            <Logo size={40} />
             <div className="leading-none">
               <p className="font-display text-[17px] font-bold tracking-tight text-ink">
                 Hatayı Yakala
               </p>
-              <p className="label mt-1">GAZİ ÜNİVERSİTESİ</p>
+              <p className="label mt-1 text-[10px] tracking-wider text-ink-muted">GAZİ ÜNİVERSİTESİ</p>
             </div>
           </Link>
 

@@ -9,6 +9,7 @@ import type {
   SessionSecret,
   SurveyResponse,
   Lesson,
+  QuizAnswer,
   LiveSession,
   Participant,
   SessionRating,
@@ -29,6 +30,7 @@ const K = {
   notes: 'hy.live.notes', // Eski not yazma modu (kaldırıldı)
   secrets: 'hy.live.secrets', // Metin + hatalar (hocaya özel)
   catches: 'hy.live.catches',
+  quizAnswers: 'hy.live.quizAnswers', // Ön test / son test cevapları
   ratings: 'hy.live.ratings',
   surveys: 'hy.live.surveys',
   /** Bu sekmedeki öğrencinin katılımı — { sessionId, participantId } */
@@ -148,6 +150,13 @@ export const putCatch = (c: Catch) => {
   const list = getCatches().filter((x) => x.id !== c.id)
   list.push(c)
   write(K.catches, list)
+}
+
+export const getQuizAnswers = () => read<QuizAnswer[]>(K.quizAnswers, [])
+export const putQuizAnswer = (a: QuizAnswer) => {
+  const list = getQuizAnswers().filter((x) => x.id !== a.id)
+  list.push(a)
+  write(K.quizAnswers, list)
 }
 
 export const getSurveys = () => read<SurveyResponse[]>(K.surveys, [])

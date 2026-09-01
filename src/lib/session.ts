@@ -24,6 +24,7 @@ import { signInAnonymously } from 'firebase/auth'
 
 import { firebaseAuth, firestore, isFirebaseConfigured } from './firebase'
 import * as store from './store'
+import { publicQuestions, scoreQuiz } from './quiz'
 import type {
   Block,
   Buzz,
@@ -34,7 +35,11 @@ import type {
   LiveSessionMode,
   LiveSessionVersion,
   Participant,
+  QuizAnswer,
+  QuizKind,
+  QuizQuestion,
   ReadingMode,
+  SessionAudio,
   SessionRating,
   SessionSecret,
   SurveyResponse,
@@ -90,6 +95,11 @@ function hydrate(s: LiveSession): LiveSession {
     scriptLength: s.scriptLength ?? 0,
     blockEstimateMs: s.blockEstimateMs ?? 0,
     graceEndsAt: s.graceEndsAt ?? 0,
+    // Ön/son test alanları sonradan eklendi
+    pretestCount: s.pretestCount ?? 0,
+    posttestCount: s.posttestCount ?? 0,
+    activeQuiz: s.activeQuiz ?? null,
+    audio: s.audio ?? null,
   }
 }
 
@@ -116,6 +126,12 @@ export interface SessionOptions {
   /** Eski parça modeli */
   segments?: string[]
   wrongBlocks?: WrongBlock[]
+  /** Ders dinlenmeden önce çözülecek test */
+  pretest?: QuizQuestion[]
+  /** Ders dinlendikten sonra çözülecek test */
+  posttest?: QuizQuestion[]
+  /** Hocanın yüklediği ses kaydının künyesi (dosya cihazda kalır) */
+  audio?: SessionAudio | null
 }
 
 export async function createSession(
@@ -127,6 +143,8 @@ export async function createSession(
   const now = Date.now()
   const script = opts.script ?? ''
   const wrongBlocks = opts.wrongBlocks ?? []
+  const pretest = opts.pretest ?? []
+  const posttest = opts.posttest ?? []
 
   const session: LiveSession = {
     id: uid('ses'),
@@ -142,18 +160,31 @@ export async function createSession(
     segments: opts.segments ?? [],
     // Öğrenciye yalnızca KAÇ hata olduğunu söylüyoruz, nerede olduğunu değil
     wrongCount: wrongBlocks.length,
+    // Öğrenciye yalnızca kaç soru olduğunu söylüyoruz; sorular test
+    // başlayana kadar (doğru şıkları hiçbir zaman) oturuma yazılmaz.
+    pretestCount: pretest.length,
+    posttestCount: posttest.length,
+    activeQuiz: null,
+    audio: opts.audio ?? null,
     scriptLength: script.length,
     currentBlockIndex: 0,
     blockStartedAt: 0,
     blockDurationMs: 0,
-    blockEstimateMs: script ? estimateReadMs(script) : 0,
+    blockEstimateMs: opts.audio?.durationMs || (script ? estimateReadMs(script) : 0),
     graceEndsAt: 0,
     createdAt: now,
     updatedAt: now,
   }
   await saveSession(session)
   // Metin ve hatalar ayrı, hocaya özel dokümanda
-  await saveSessionSecret({ sessionId: session.id, teacherId, script, wrongBlocks })
+  await saveSessionSecret({
+    sessionId: session.id,
+    teacherId,
+    script,
+    wrongBlocks,
+    pretest,
+    posttest,
+  })
   return session
 }
 
@@ -712,6 +743,146 @@ export async function markMissedWrongs(
 /* ══════════════════════════════════════════════════════════
    ARAŞTIRMA ANKETİ
    ══════════════════════════════════════════════════════════ */
+
+/* ══════════════════════════════════════════════════════════
+   ÖN TEST / SON TEST
+
+   Akış: lobi → ÖN TEST → ders (okuma) → SON TEST → bitiş.
+   Sorular hocaya özel dokümanda durur; test AÇILDIĞINDA doğru şıkları
+   sökülmüş hâlleri oturum dokümanına yazılır, test kapanınca silinir.
+   Böylece öğrencinin telefonu soruları yalnızca çözmesi gereken sürede
+   görür, doğru cevapları ise hiçbir zaman görmez.
+   ══════════════════════════════════════════════════════════ */
+
+/** Bir öğrencinin bir testteki cevap kaydının kimliği — tekrarı engeller. */
+export const quizAnswerId = (sessionId: string, kind: QuizKind, participantId: string) =>
+  `${sessionId}_${kind}_${participantId}`
+
+/** Testi aç: fazı değiştirir ve soruları (cevapsız) yayına alır. */
+export async function startQuiz(
+  session: LiveSession,
+  kind: QuizKind,
+  questions: QuizQuestion[],
+): Promise<void> {
+  if (!questions.length) throw new Error('Bu test için yüklenmiş soru yok.')
+  await saveSession({
+    ...session,
+    phase: kind === 'pre' ? 'pretest' : 'posttest',
+    activeQuiz: {
+      kind,
+      questions: publicQuestions(questions),
+      startedAt: Date.now(),
+    },
+  })
+}
+
+/** Testi kapat ve bir sonraki aşamaya geç. */
+export async function endQuiz(
+  session: LiveSession,
+  nextPhase: LiveSession['phase'],
+): Promise<void> {
+  await saveSession({ ...session, phase: nextPhase, activeQuiz: null })
+}
+
+/**
+ * Öğrencinin cevapları. ÖĞRENCİNİN YAZABİLDİĞİ TEK ALAN burasıdır;
+ * puanı hoca cihazı hesaplayıp aynı dokümana ekler.
+ */
+export async function submitQuizAnswer(
+  session: LiveSession,
+  participant: Participant,
+  kind: QuizKind,
+  answers: Record<string, number>,
+): Promise<QuizAnswer> {
+  const rec: QuizAnswer = {
+    id: quizAnswerId(session.id, kind, participant.id),
+    sessionId: session.id,
+    participantId: participant.id,
+    participantName: participant.name,
+    kind,
+    answers,
+    submittedAt: Date.now(),
+  }
+  if (live()) {
+    await setDoc(doc(firestore!, 'quizAnswers', rec.id), rec)
+  } else {
+    store.putQuizAnswer(rec)
+  }
+  return rec
+}
+
+/** Hoca cihazı notlar — Firestore undefined kabul etmediği için alanlar tek tek yazılır. */
+export async function gradeQuizAnswer(
+  answer: QuizAnswer,
+  questions: QuizQuestion[],
+): Promise<void> {
+  const { correctCount, total, percent } = scoreQuiz(answer, questions)
+  const graded: QuizAnswer = {
+    ...answer,
+    correctCount,
+    total,
+    percent,
+    gradedAt: Date.now(),
+  }
+  if (live()) {
+    await setDoc(doc(firestore!, 'quizAnswers', graded.id), graded)
+    return
+  }
+  store.putQuizAnswer(graded)
+}
+
+/**
+ * Öğrencinin KENDİ cevabını tek seferde okur — sayfa yenilenince testi
+ * baştan çözmesin. Bütün cevapları dinlemek 150 telefonda gereksiz
+ * okuma olurdu, bu yüzden tek doküman.
+ */
+export async function getQuizAnswer(id: string): Promise<QuizAnswer | null> {
+  if (live()) {
+    const snap = await getDoc(doc(firestore!, 'quizAnswers', id))
+    return snap.exists() ? (snap.data() as QuizAnswer) : null
+  }
+  return store.getQuizAnswers().find((a) => a.id === id) ?? null
+}
+
+export function watchQuizAnswers(
+  sessionId: string,
+  cb: (list: QuizAnswer[]) => void,
+): () => void {
+  const sortAsc = (a: QuizAnswer, b: QuizAnswer) => a.submittedAt - b.submittedAt
+
+  if (live()) {
+    const q = query(collection(firestore!, 'quizAnswers'), where('sessionId', '==', sessionId))
+    return onSnapshot(
+      q,
+      (snap) => cb(snap.docs.map((d) => d.data() as QuizAnswer).sort(sortAsc)),
+      (err) => {
+        console.error('[quizAnswers] dinlenemedi:', err)
+        cb([])
+      },
+    )
+  }
+  const emit = () =>
+    cb(store.getQuizAnswers().filter((a) => a.sessionId === sessionId).sort(sortAsc))
+  emit()
+  return store.subscribe(emit)
+}
+
+/** Rapor ekranı için — tüm oturumların cevapları. */
+export function watchAllQuizAnswers(cb: (list: QuizAnswer[]) => void): () => void {
+  if (live()) {
+    return onSnapshot(
+      collection(firestore!, 'quizAnswers'),
+      (snap) => cb(snap.docs.map((d) => d.data() as QuizAnswer)),
+      (err) => {
+        console.error('[quizAnswers] dinlenemedi:', err)
+        cb([])
+      },
+    )
+  }
+  const emit = () => cb(store.getQuizAnswers())
+  emit()
+  return store.subscribe(emit)
+}
 
 export async function submitSurvey(r: SurveyResponse): Promise<void> {
   if (live()) {

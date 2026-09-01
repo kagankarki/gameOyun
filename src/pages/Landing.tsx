@@ -174,9 +174,16 @@ export default function Landing() {
             className="mt-10 flex flex-wrap items-center justify-center gap-4"
           >
             {user ? (
-              <Button3D size="lg" icon="→" onClick={() => nav(isTeacher ? '/hoca' : '/dersler')}>
-                {isTeacher ? 'Panelime Git' : 'Derslere Gir'}
-              </Button3D>
+              <>
+                <Button3D size="lg" icon="→" onClick={() => nav(isTeacher ? '/hoca' : '/dersler')}>
+                  {isTeacher ? 'Panelime Git' : 'Derslere Gir'}
+                </Button3D>
+                {/* Üst şerit ana sayfanın tepesinde gizli; başka hesapla girmek
+                    isteyen (ör. telefonu devralan hoca) buradan çıkabilsin. */}
+                <Button3D size="lg" tone="ghost" onClick={() => nav('/giris')}>
+                  Hesap Değiştir
+                </Button3D>
+              </>
             ) : (
               <>
                 <Button3D size="lg" onClick={() => nav('/giris')}>

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import Button3D from '@/components/Button3D'
@@ -34,6 +34,19 @@ export default function AmfiJoin() {
     if (user?.name && !nameTouched) setName(user.name)
   }, [user?.name, nameTouched])
 
+  /**
+   * Katılımı bırak — cihaz yeniden katılım ekranına döner.
+   * Bu olmadan bir kez koda girildiğinde /amfi hep o oturumu açıyor,
+   * öğrenci ikinci bir derse giremiyordu.
+   */
+  const leave = useCallback(() => {
+    store.setMyJoin(null)
+    setJoined(null)
+    setSession(null)
+    setError(null)
+    setCode(codeParam?.toLocaleUpperCase('tr-TR') ?? '')
+  }, [codeParam])
+
   /* Sayfa yenilenirse oturuma geri dön.
      Katılım bilgisi localStorage'da duruyor; oturumun kendisini ağdan
      (ya da demo deposundan) dinleyerek alıyoruz. */
@@ -48,14 +61,23 @@ export default function AmfiJoin() {
   useEffect(() => {
     if (!joined?.sessionId) return
     return ses.watchSession(joined.sessionId, (s) => {
-      setSession(s)
       // Oturum silinmişse ya da bulunamıyorsa katılım ekranına dön
       if (!s) {
-        store.setMyJoin(null)
-        setJoined(null)
+        leave()
+        return
       }
+      /* QR/bağlantı BAŞKA bir oturumun kodunu taşıyorsa eski katılım geçersiz:
+         öğrenci yeni derse giriyor demektir. */
+      if (
+        codeParam &&
+        s.code.toLocaleUpperCase('tr-TR') !== codeParam.toLocaleUpperCase('tr-TR')
+      ) {
+        leave()
+        return
+      }
+      setSession(s)
     })
-  }, [joined?.sessionId])
+  }, [joined?.sessionId, codeParam, leave])
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -100,9 +122,17 @@ export default function AmfiJoin() {
     // Sürüme göre ekran: 1 = zil, 2 = not yazma.
     // `version` alanı sonradan eklendi; eski oturumlar 1.0 sayılır.
     return (session.version ?? 1) === 2 ? (
-      <AmfiPlayV2 sessionId={joined.sessionId} participantId={joined.participantId} />
+      <AmfiPlayV2
+        sessionId={joined.sessionId}
+        participantId={joined.participantId}
+        onLeave={leave}
+      />
     ) : (
-      <AmfiPlay sessionId={joined.sessionId} participantId={joined.participantId} />
+      <AmfiPlay
+        sessionId={joined.sessionId}
+        participantId={joined.participantId}
+        onLeave={leave}
+      />
     )
   }
 

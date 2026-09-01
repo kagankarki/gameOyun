@@ -1,6 +1,6 @@
 /**
  * ÖĞRENCİ DEĞERLENDİRME ANKETİ
- * "Kasıtlı Hata Temelli Anatomi Eğitimi" araştırması.
+ * Bkz. `CALISMA_BASLIGI` — anketin bağlı olduğu araştırma.
  *
  * Maddeler ve alt boyutlar araştırma formundan birebir alınmıştır.
  * 27–30. maddeler TERS puanlanır (1↔5); `ters: true` ile işaretli.
@@ -25,6 +25,18 @@ export interface AltBoyut {
   yalnizDeney?: boolean
   maddeler: AnketMaddesi[]
 }
+
+/**
+ * ÇALIŞMANIN RESMİ BAŞLIĞI — anket formunda, raporlarda ve Excel
+ * çıktısında geçen tek kaynak. Başlık değişirse yalnızca burası değişir.
+ */
+export const CALISMA_BASLIGI =
+  'Nöroanatomi Eğitiminde Kasıtlı Hata Tespiti: Yapay Zekâ Asistanı Destekli ' +
+  'Öğretimin Öğrenme, Bilgi Kalıcılığı ve Anatomik Hata Farkındalığı Üzerine ' +
+  'Etkisinin Kontrollü Olarak Değerlendirilmesi'
+
+/** Dar alanlarda (sekme adı, kart başlığı) kullanılan kısa hâli */
+export const CALISMA_BASLIGI_KISA = 'Nöroanatomi Eğitiminde Kasıtlı Hata Tespiti'
 
 export const ALT_BOYUTLAR: AltBoyut[] = [
   {

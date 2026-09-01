@@ -34,6 +34,10 @@ export interface Lesson {
   wrongBlocks?: WrongBlock[]
   /** Eski blok modeli ile uyumluluk için */
   blocks: Block[]
+  /** Ders DİNLENMEDEN ÖNCE çözülen ölçme testi */
+  pretest?: QuizQuestion[]
+  /** Ders dinlendikten SONRA çözülen ölçme testi */
+  posttest?: QuizQuestion[]
   /** true ise öğrenciler girip oynayabilir */
   isLive: boolean
   createdAt: number
@@ -65,12 +69,16 @@ export interface LeaderRow {
 export type SessionPhase =
   /** Öğrenciler katılıyor, ders henüz başlamadı */
   | 'lobby'
+  /** ÖN TEST — ders dinlenmeden önce çözülüyor */
+  | 'pretest'
   /** TTS bölümü okuyor — not yazma penceresi açık */
   | 'speaking'
   /** Konuşma bitti, geç notlar için tolerans süresi */
   | 'grace'
   /** Bölüm kapandı, sonuç gösteriliyor */
   | 'reveal'
+  /** SON TEST — ders bittikten sonra çözülüyor */
+  | 'posttest'
   /** Ders bitti */
   | 'ended'
 
@@ -115,6 +123,20 @@ export interface LiveSession {
   readingMode: ReadingMode
   /** Kaç hata var — öğrenciye ilerleme göstermek için (yerleri değil) */
   wrongCount: number
+  /**
+   * Ders TTS ile mi okunacak, hocanın kaydıyla mı?
+   * Doluysa metin bu ses kaydına göre ilerler.
+   */
+  audio: SessionAudio | null
+  /** Ön testte kaç soru var (0 = ön test yok) */
+  pretestCount: number
+  /** Son testte kaç soru var (0 = son test yok) */
+  posttestCount: number
+  /**
+   * O an açık olan test — soruların DOĞRU ŞIKLARI YOK.
+   * Test kapalıyken null; öğrencinin telefonu yalnızca burayı okur.
+   */
+  activeQuiz: ActiveQuiz | null
   /** Sürekli okumada metnin toplam karakter sayısı — ilerleme çubuğu */
   scriptLength: number
   /** Eski parça modeli — sürekli okumada boştur */
@@ -138,6 +160,74 @@ export interface LiveSession {
 export type ReadingMode = 'continuous' | 'segmented'
 
 /**
+ * Hocanın yüklediği ses kaydının künyesi. Dosyanın KENDİSİ burada değil —
+ * hocanın cihazındaki IndexedDB'de (bkz. `lib/audioStore.ts`). Öğrencinin
+ * telefonu sesi hiç çalmadığı için ağa taşımaya gerek yok.
+ */
+export interface SessionAudio {
+  name: string
+  /** Kaydın uzunluğu (ms) — 0 ise okunamamış */
+  durationMs: number
+  size: number
+}
+
+/* ══════════════════════════════════════════════════════════
+   ÖN TEST / SON TEST
+   Aynı oturumda iki ölçüm: öğrenci dersi DİNLEMEDEN önce bir kez,
+   dinledikten sonra bir kez çözer. İkisinin farkı dersin katkısını
+   gösterir — araştırmanın asıl verisi bu.
+   ══════════════════════════════════════════════════════════ */
+
+export type QuizKind = 'pre' | 'post'
+
+/** Hocanın yüklediği soru — DOĞRU ŞIK DÂHİL. Öğrenciye asla gitmez. */
+export interface QuizQuestion {
+  id: string
+  question: string
+  /** 2–5 şık */
+  options: string[]
+  correctIndex: number
+  /** Varsayılan 1 puan */
+  points?: number
+}
+
+/**
+ * Öğrencinin telefonuna giden hâli — `correctIndex` YOK.
+ * Konsolu açan öğrenci cevapları görmesin diye ayrı tip.
+ */
+export interface PublicQuizQuestion {
+  id: string
+  question: string
+  options: string[]
+}
+
+/** Test açıkken oturum dokümanına yazılan herkese açık kısım */
+export interface ActiveQuiz {
+  kind: QuizKind
+  questions: PublicQuizQuestion[]
+  startedAt: number
+}
+
+/** Bir öğrencinin bir teste verdiği cevaplar */
+export interface QuizAnswer {
+  /** `<sessionId>_<kind>_<participantId>` — aynı test iki kez gönderilemez */
+  id: string
+  sessionId: string
+  participantId: string
+  participantName: string
+  kind: QuizKind
+  /** soru id → işaretlenen şık indeksi */
+  answers: Record<string, number>
+  submittedAt: number
+  /* ── Aşağısını HOCA cihazı doldurur ── */
+  correctCount?: number
+  total?: number
+  /** Yüzde (0–100) */
+  percent?: number
+  gradedAt?: number
+}
+
+/**
  * OTURUM — HOCAYA ÖZEL KISIM
  * Firestore kuralları bu koleksiyonu yalnızca oturumu açan hocaya açar.
  */
@@ -147,6 +237,10 @@ export interface SessionSecret {
   /** Sesli okunacak metnin tamamı */
   script: string
   wrongBlocks: WrongBlock[]
+  /** Ön test soruları — doğru şıklarıyla birlikte */
+  pretest?: QuizQuestion[]
+  /** Son test soruları — doğru şıklarıyla birlikte */
+  posttest?: QuizQuestion[]
 }
 
 export interface WrongBlock {
@@ -259,7 +353,7 @@ export interface SessionRating {
 }
 
 /**
- * ARAŞTIRMA ANKETİ — "Kasıtlı Hata Temelli Anatomi Eğitimi"
+ * ARAŞTIRMA ANKETİ — bkz. `survey.ts` içindeki `CALISMA_BASLIGI`
  * Yıldız değerlendirmesinden ayrı, isteğe bağlı bilimsel form.
  */
 export interface SurveyResponse {

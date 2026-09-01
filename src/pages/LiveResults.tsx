@@ -8,6 +8,7 @@ import { motion } from 'framer-motion'
 
 import Button3D from '@/components/Button3D'
 import Loader from '@/components/Loader'
+import QuizComparison from '@/components/QuizComparison'
 import { RatingSummary } from '@/components/Rating'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
@@ -16,12 +17,13 @@ import type {
   Lesson,
   LiveSession,
   Participant,
+  QuizAnswer,
   SessionRating,
   SessionSecret,
   SurveyResponse,
 } from '@/lib/types'
 import { useToast } from '@/components/Toast'
-import { altBoyutOrtalamalari } from '@/lib/survey'
+import { altBoyutOrtalamalari, CALISMA_BASLIGI } from '@/lib/survey'
 import { exportSessionToExcel } from '@/lib/exportExcel'
 import { cx, fmtDate, initials } from '@/lib/utils'
 
@@ -38,6 +40,7 @@ export default function LiveResults() {
   const [catches, setCatches] = useState<Catch[]>([])
   const [secret, setSecret] = useState<SessionSecret | null>(null)
   const [surveys, setSurveys] = useState<SurveyResponse[]>([])
+  const [quizAnswers, setQuizAnswers] = useState<QuizAnswer[]>([])
   const [ratings, setRatings] = useState<SessionRating[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -91,12 +94,14 @@ export default function LiveResults() {
     const c = ses.watchRatings(picked.id, setRatings)
     const d = ses.watchSessionSecret(picked.id, setSecret)
     const e = ses.watchSurveys(picked.id, setSurveys)
+    const f = ses.watchQuizAnswers(picked.id, setQuizAnswers)
     return () => {
       a()
       b()
       c()
       d()
       e()
+      f()
     }
   }, [picked?.id])
 
@@ -173,6 +178,10 @@ export default function LiveResults() {
       readingMode: 'continuous',
       segments: [],
       wrongCount: lesson.wrongBlocks?.length || 0,
+      pretestCount: lesson.pretest?.length || 0,
+      posttestCount: lesson.posttest?.length || 0,
+      activeQuiz: null,
+      audio: null,
       scriptLength: lesson.script?.length || 0,
       currentBlockIndex: 0,
       blockStartedAt: 0,
@@ -196,6 +205,7 @@ export default function LiveResults() {
       },
       surveys,
       ratings,
+      quizAnswers,
     })
     toast('Excel raporu başarıyla indirildi.', 'success')
   }
@@ -400,6 +410,13 @@ export default function LiveResults() {
         )}
       </section>
 
+      {/* Ön test → son test: dersin ölçülebilir çıktısı */}
+      {quizAnswers.length > 0 && (
+        <section className="mt-8">
+          <QuizComparison participants={participants} quizAnswers={quizAnswers} />
+        </section>
+      )}
+
       {/* Yıldız Değerlendirmeleri */}
       <RatingSummary ratings={ratings} />
 
@@ -409,6 +426,9 @@ export default function LiveResults() {
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <div>
               <p className="label font-bold">ARAŞTIRMA ANKETİ</p>
+              <p className="mt-1.5 max-w-2xl text-[12px] leading-relaxed text-ink-muted">
+                {CALISMA_BASLIGI}
+              </p>
               <p className="mt-1 text-xs text-ink-muted">
                 Alt boyut ortalamaları (1–5) · Ters maddeler çevrilmiş
               </p>

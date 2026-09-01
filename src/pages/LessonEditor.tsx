@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { AnimatePresence, motion } from 'framer-motion'
 
+import AudioUploader from '@/components/AudioUploader'
 import Button3D from '@/components/Button3D'
 import Loader from '@/components/Loader'
 import { useToast } from '@/components/Toast'
@@ -23,6 +24,8 @@ import { useAuth } from '@/context/AuthContext'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
 import { generateFollowUp, isGeminiConfigured, type Zorluk } from '@/lib/gemini'
+import { kunye, type DersSesi } from '@/lib/audioStore'
+import { ara, cumleAraligi, reanchorWrongs, trimRange, type Eslesme } from '@/lib/marking'
 import { EASE } from '@/lib/motion'
 import type { FollowUpQuestion, Lesson, WrongBlock } from '@/lib/types'
 import { cx } from '@/lib/utils'
@@ -53,10 +56,15 @@ export default function LessonEditor() {
 
   /* Form & Seçim State */
   const [selection, setSelection] = useState<{ start: number; end: number } | null>(null)
+  /* Metinde arama + yeri kaybolan işaretler */
+  const [arama, setArama] = useState('')
+  const [dusenler, setDusenler] = useState<string[]>([])
+  /** Hocanın yüklediği ders kaydı — dosya bu cihazda (AudioUploader) */
+  const [sesKaydi, setSesKaydi] = useState<DersSesi | null>(null)
   const [explanation, setExplanation] = useState('')
   const [correction, setCorrection] = useState('')
   const [soru, setSoru] = useState<FollowUpQuestion>(BOS_SORU_5)
-  const [soruAcik, setSoruAcik] = useState(true)
+  const [soruAcik, setSoruAcik] = useState(false)
   const [zorluk, setZorluk] = useState<Zorluk>('orta')
   const [uretiliyor, setUretiliyor] = useState(false)
 
@@ -109,6 +117,44 @@ export default function LessonEditor() {
 
   const selectedText = selection ? script.slice(selection.start, selection.end).trim() : ''
 
+  const eslesmeler = useMemo<Eslesme[]>(() => ara(script, arama, wrongs), [script, arama, wrongs])
+
+  /**
+   * Arama sonucundan doğrudan tuzağa: eşleşmenin geçtiği CÜMLEYİ seçer.
+   * Tuzak tek bir kelime değil, öğrencinin duyup yakalayacağı bir ifadedir;
+   * hocayı metinde fareyle cümle avlamaya zorlamıyoruz.
+   */
+  const eslesmeyiIsaretle = (m: Eslesme) => {
+    const c = cumleAraligi(script, m.start, m.end)
+    setSelection(c)
+    const el = areaRef.current
+    if (el) {
+      el.focus()
+      el.setSelectionRange(c.start, c.end)
+    }
+    // Form listenin altında açılıyor — hoca aramayı bırakıp oraya baksın
+    setTimeout(
+      () => document.getElementById('isaretleme-formu')?.scrollIntoView({ block: 'center' }),
+      80,
+    )
+  }
+
+  const eslesmeyeGit = (m: Eslesme) => {
+    setSelection({ start: m.start, end: m.end })
+    const el = areaRef.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(m.start, m.end)
+    const oran = script.length ? m.start / script.length : 0
+    el.scrollTop = Math.max(0, oran * el.scrollHeight - el.clientHeight / 2)
+  }
+
+  /**
+   * Buton neden basılamıyor? Ölü bir düğme bırakmıyoruz: sebebi
+   * ekranda yazıyor. "Bir tuzak ekledim, ikincisini ekleyemiyorum"
+   * şikâyetinin kaynağı buydu — çakışma sessizce butonu kapatıyordu.
+   */
+
   /** Seçim mevcut bir işaretle çakışıyor mu? */
   const cakisan = useMemo(() => {
     if (!selection) return null
@@ -121,7 +167,11 @@ export default function LessonEditor() {
     if (!el) return
     const { selectionStart: start, selectionEnd: end } = el
     if (start === null || end === null || start === end) return
-    setSelection({ start, end })
+    // Seçimin baştaki/sondaki boşluğunu kırp — kaydedilen metinle
+    // birebir örtüşmezse işaret ilk düzenlemede kayboluyordu.
+    const kirpik = trimRange(script, start, end)
+    if (kirpik.start === kirpik.end) return
+    setSelection(kirpik)
   }
 
   const formuTemizle = () => {
@@ -129,7 +179,8 @@ export default function LessonEditor() {
     setExplanation('')
     setCorrection('')
     setSoru(BOS_SORU_5)
-    setSoruAcik(true)
+    // Varsayılan KAPALI: soru isteğe bağlı, zorunlu gibi görünmesin
+    setSoruAcik(false)
     setZorluk('orta')
   }
 
@@ -215,7 +266,11 @@ export default function LessonEditor() {
     setWrongs((list) =>
       [...list, w].sort((a, b) => a.start - b.start).map((x, i) => ({ ...x, blockIndex: i })),
     )
-    toast('Hata ve 5 şıklı soru eklendi.', 'success')
+    toast(
+      `${wrongs.length + 1}. tuzak eklendi${followUp ? ' (5 şıklı soruyla)' : ''}. ` +
+        'Metinden başka bir cümle seçerek istediğin kadar tuzak ekleyebilirsin.',
+      'success',
+    )
     formuTemizle()
   }
 
@@ -225,13 +280,20 @@ export default function LessonEditor() {
     )
   }
 
-  /** Metin değiştiğinde indeksleri koru veya eşleşmeyenleri temizle */
+  /**
+   * Metin değiştiğinde işaretleri yeni konumlarına taşır.
+   * Eskiden kayan işaretler sessizce siliniyordu — birkaç hata işaretleyip
+   * metne dokunan hoca hepsini birden kaybediyordu.
+   */
   useEffect(() => {
     setWrongs((list) => {
-      const kalan = list.filter(
-        (w) => w.end <= script.length && script.slice(w.start, w.end) === w.text,
-      )
-      return kalan.length === list.length ? list : kalan.map((x, i) => ({ ...x, blockIndex: i }))
+      if (!list.length) return list
+      const { wrongs: yeni, dusen } = reanchorWrongs(script, list)
+      if (dusen.length) setDusenler(dusen)
+      const degisti =
+        yeni.length !== list.length ||
+        yeni.some((w, i) => w.start !== list[i]?.start || w.end !== list[i]?.end)
+      return degisti ? yeni : list
     })
   }, [script])
 
@@ -298,6 +360,11 @@ export default function LessonEditor() {
         readingMode: 'continuous',
         script: saved.script || script,
         wrongBlocks: wrongs,
+        // Derse kayıtlı ön/son test ve bu cihazdaki ses kaydı da oturuma gitsin —
+        // bu düğme Amfi Hazırlık ekranına uğramadan oturum açıyor.
+        pretest: saved.pretest ?? [],
+        posttest: saved.posttest ?? [],
+        audio: sesKaydi ? kunye(sesKaydi) : null,
       })
       nav(`/hoca/amfi-host-v2/${saved.id}?sessionId=${session.id}`)
     } catch (err) {
@@ -433,7 +500,105 @@ export default function LessonEditor() {
           className="field min-h-[260px] resize-y font-serif text-base leading-relaxed"
           placeholder="Ders notunu veya paragraflarını buraya yapıştır…&#10;&#10;Örn: Arkadaşlar bugün size mezensefalon hakkında bilgiler vereceğim. Mezensefalon 3 ana alt başlıkta incelenir…"
         />
+
+        {/* ── Metinde ara ── */}
+        <div className="mt-4 rounded-sm border border-paper-edge bg-paper-deep p-4">
+          <label className="field-label" htmlFor="ara-editor">
+            METİNDE ARA
+          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              id="ara-editor"
+              value={arama}
+              onChange={(e) => setArama(e.target.value)}
+              className="field min-w-[220px] flex-1 text-sm"
+              placeholder="Aradığın ifadeyi yaz — sonuca tıkla, o yer seçilsin"
+              autoComplete="off"
+            />
+            {arama.trim().length >= 2 && (
+              <span className="label whitespace-nowrap">{eslesmeler.length} EŞLEŞME</span>
+            )}
+            {arama && (
+              <button
+                type="button"
+                onClick={() => setArama('')}
+                className="text-xs font-semibold text-ink-muted underline underline-offset-2 hover:text-ink"
+              >
+                Temizle
+              </button>
+            )}
+          </div>
+
+          {arama.trim().length >= 2 && (
+            <div className="mt-3 max-h-64 space-y-1.5 overflow-y-auto">
+              {eslesmeler.length === 0 ? (
+                <p className="py-4 text-center text-sm text-ink-muted">Bu metinde geçmiyor.</p>
+              ) : (
+                eslesmeler.map((m) => (
+                  <div
+                    key={m.start}
+                    className={cx(
+                      'flex items-start gap-3 rounded-sm border-l-4 bg-paper-card px-3 py-2',
+                      m.isaretli ? 'border-l-mark' : 'border-l-paper-edge',
+                    )}
+                  >
+                    <span className="mt-1 font-mono text-[10px] font-bold text-ink-faint">
+                      {m.start}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => eslesmeyeGit(m)}
+                      className="min-w-0 flex-1 text-left font-serif text-sm leading-snug text-ink hover:underline"
+                      title="Bu yeri metinde seç"
+                    >
+                      {m.onizleme.slice(0, m.vurguStart)}
+                      <mark className="bg-flag-soft font-semibold text-ink">
+                        {m.onizleme.slice(m.vurguStart, m.vurguEnd)}
+                      </mark>
+                      {m.onizleme.slice(m.vurguEnd)}
+                    </button>
+                    {/* Aramadan doğrudan tuzak: metinde fareyle cümle avlamaya gerek yok */}
+                    {m.isaretli ? (
+                      <span className="label-chip mt-0.5 shrink-0 border-mark bg-mark-soft text-mark">
+                        İŞARETLİ
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => eslesmeyiIsaretle(m)}
+                        className="mt-0.5 shrink-0 rounded-sm border border-mark px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-mark transition-colors hover:bg-mark hover:text-paper"
+                      >
+                        TUZAK YAP
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
+        {dusenler.length > 0 && (
+          <div className="mt-4 rounded-sm border-l-2 border-flag bg-flag-soft p-4 text-[12px] leading-relaxed text-ink">
+            <div className="flex items-start justify-between gap-3">
+              <p>
+                <strong className="font-semibold">{dusenler.length} işaret düştü:</strong> metni
+                değiştirdiğin için {dusenler.map((d) => `“${d}”`).join(', ')} artık bulunamıyor.
+              </p>
+              <button
+                type="button"
+                onClick={() => setDusenler([])}
+                className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-ink-muted hover:text-ink"
+              >
+                KAPAT
+              </button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Ders sesi — TTS yerine hocanın kendi kaydıyla anlatmak için */}
+      <AudioUploader lessonId={lesson?.id} onChange={setSesKaydi} />
 
       {/* ── Yanlış İşaretleme & 5 Şıklı Soru Formu ── */}
       <AnimatePresence>
@@ -443,6 +608,7 @@ export default function LessonEditor() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
             transition={{ duration: 0.25, ease: EASE }}
+            id="isaretleme-formu"
             className="file-card space-y-5 border-l-4 border-l-mark p-6 shadow-lift"
           >
             <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -495,16 +661,27 @@ export default function LessonEditor() {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="label font-bold text-ink">
-                    YANLIŞI BULAN ÖĞRENCİYE ANINDA AÇILACAK 5 ŞIKLI SORU
+                    5 ŞIKLI EK SORU{' '}
+                    <span className="text-ink-muted">· İSTEĞE BAĞLI</span>
                   </p>
                   <p className="mt-1 text-xs text-ink-muted">
-                    6 saniyede zili çalan öğrencilerin ekranında anında bu 5 şıklı soru açılır. Doğru
-                    bilirse <strong className="text-verify">+{soru.bonus} ek puan</strong> kazanır!
+                    6 saniyede zili çalan öğrencinin ekranında açılır; doğru bilirse{' '}
+                    <strong className="text-verify">+{soru.bonus} ek puan</strong>.{' '}
+                    <strong className="text-ink">Boş bırakabilirsin</strong> — tuzak soru olmadan da
+                    eklenir.
                   </p>
                 </div>
 
                 {/* Zorluk & AI Üretim */}
                 <div className="flex flex-wrap items-center gap-2">
+                  <Button3D
+                    type="button"
+                    size="sm"
+                    tone="ghost"
+                    onClick={() => setSoruAcik((v) => !v)}
+                  >
+                    {soruAcik ? 'Soruyu Atla' : 'Soru Ekle'}
+                  </Button3D>
                   <div className="flex items-center gap-1 rounded-sm border border-paper-edge bg-paper-card p-1">
                     <span className="px-1.5 font-mono text-[10px] font-bold text-ink-muted">
                       ZORLUK:
@@ -538,6 +715,14 @@ export default function LessonEditor() {
                 </div>
               </div>
 
+              {!soruAcik && (
+                <p className="mt-3 text-xs text-ink-muted">
+                  Bu tuzakta ek soru sorulmayacak. Öğrenci hatayı yakaladığında puanını
+                  alır, soru ekranı açılmaz.
+                </p>
+              )}
+
+              {soruAcik && (
               <div className="mt-4 space-y-3">
                 <div>
                   <label className="field-label" htmlFor="q">
@@ -594,21 +779,45 @@ export default function LessonEditor() {
                   ))}
                 </div>
               </div>
+              )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-3 pt-2">
-              <Button3D
-                type="button"
-                onClick={ekle}
-                size="md"
-                tone="danger"
-                disabled={!explanation.trim() || !!cakisan}
-              >
-                Tuzak Olarak İşaretle (+5 Şıklı Soru)
-              </Button3D>
-              <Button3D type="button" onClick={formuTemizle} size="md" tone="ghost">
-                Vazgeç
-              </Button3D>
+            <div className="space-y-3 pt-2">
+              <div className="flex flex-wrap items-center gap-3">
+                <Button3D
+                  type="button"
+                  onClick={ekle}
+                  size="md"
+                  tone="danger"
+                  disabled={!explanation.trim() || !!cakisan}
+                >
+                  {soru.question.trim()
+                    ? 'Tuzak Olarak İşaretle (soruyla)'
+                    : 'Tuzak Olarak İşaretle'}
+                </Button3D>
+                <Button3D type="button" onClick={formuTemizle} size="md" tone="ghost">
+                  Vazgeç
+                </Button3D>
+                {cakisan && (
+                  <Button3D
+                    type="button"
+                    size="md"
+                    tone="ghost"
+                    onClick={() => sil(cakisan.start)}
+                  >
+                    Çakışan Tuzağı Sil
+                  </Button3D>
+                )}
+              </div>
+
+              {/* Düğme neden kapalı? Sessiz kalmıyoruz. */}
+              {(!explanation.trim() || cakisan) && (
+                <p className="text-xs leading-relaxed text-mark">
+                  {cakisan
+                    ? 'Seçtiğin yer mevcut bir tuzakla çakışıyor. Ya çakışmayan bir aralık seç ya da yukarıdaki düğmeyle eski tuzağı sil.'
+                    : '“Bu ifade neden yanlış?” alanını doldurunca tuzak eklenebilir. 5 şıklı soru zorunlu değil.'}
+                </p>
+              )}
             </div>
           </motion.div>
         )}

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
+import Button3D from '@/components/Button3D'
+import QuizRunner from '@/components/QuizRunner'
 import { RatingForm } from '@/components/Rating'
 import * as ses from '@/lib/session'
 import type { LiveSession, Participant, SessionRating } from '@/lib/types'
@@ -8,13 +10,15 @@ import { cx } from '@/lib/utils'
 interface Props {
   sessionId: string
   participantId: string
+  /** Katılımı bırakıp katılım ekranına dön — cihaz bu oturuma çakılı kalmasın. */
+  onLeave: () => void
 }
 
 /**
  * Öğrencinin telefonu — zil.
  * Metin YOK: öğrenci hocayı/sesi dinler, hatayı duyduğu an basar.
  */
-export default function AmfiPlay({ sessionId, participantId }: Props) {
+export default function AmfiPlay({ sessionId, participantId, onLeave }: Props) {
   const [session, setSession] = useState<LiveSession | null>(null)
   const [participants, setParticipants] = useState<Participant[]>([])
   const [ratings, setRatings] = useState<SessionRating[]>([])
@@ -82,6 +86,12 @@ export default function AmfiPlay({ sessionId, participantId }: Props) {
       </div>
     )
 
+  /* ══════════════ ÖN TEST / SON TEST ══════════════
+     Ders akışı: ön test → dersi dinle → son test. Test açıkken oyun
+     ekranı değil, soru kâğıdı görünür. */
+  if (session.phase === 'pretest' || session.phase === 'posttest')
+    return <QuizRunner session={session} participant={me} />
+
   /* ── Ders bitti ── */
   if (session.phase === 'ended') {
     return (
@@ -116,6 +126,11 @@ export default function AmfiPlay({ sessionId, participantId }: Props) {
 
         {/* 5 yıldız üzerinden ders değerlendirmesi */}
         <RatingForm sessionId={sessionId} participant={me} ratings={ratings} />
+        {/* Ders bitti — cihaz bu oturumda takılı kalmasın, sıradaki derse
+            girebilmek için katılımı bırakabilmeli. */}
+        <Button3D full tone="ghost" onClick={onLeave}>
+          Oturumdan çık · yeni derse katıl
+        </Button3D>
       </div>
     )
   }
@@ -156,6 +171,13 @@ export default function AmfiPlay({ sessionId, participantId }: Props) {
         </div>
       </div>
 
+      <button
+        type="button"
+        onClick={onLeave}
+        className="mt-2 self-end text-[11px] font-medium text-ink-muted underline underline-offset-2 hover:text-ink"
+      >
+        Bu oturumdan çık
+      </button>
       {/* ZİL */}
       <div className="flex flex-1 items-center py-6">
         <motion.button

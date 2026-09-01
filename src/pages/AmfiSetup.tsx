@@ -17,13 +17,17 @@ import { AnimatePresence, motion } from 'framer-motion'
 
 import Button3D from '@/components/Button3D'
 import Loader from '@/components/Loader'
+import AudioUploader from '@/components/AudioUploader'
+import QuizUploader from '@/components/QuizUploader'
 import { useToast } from '@/components/Toast'
 import { useAuth } from '@/context/AuthContext'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
 import { generateFollowUp, isGeminiConfigured, type Zorluk } from '@/lib/gemini'
+import { ara, cumleAraligi, reanchorWrongs, trimRange, type Eslesme } from '@/lib/marking'
+import { kunye, sureMetni, type DersSesi } from '@/lib/audioStore'
 import { EASE } from '@/lib/motion'
-import type { FollowUpQuestion, Lesson, WrongBlock } from '@/lib/types'
+import type { FollowUpQuestion, Lesson, QuizQuestion, WrongBlock } from '@/lib/types'
 import { cx } from '@/lib/utils'
 
 /** Yeni bir hata işaretlenirken formun başlangıç hâli (5 şıklı) */
@@ -46,6 +50,9 @@ export default function AmfiSetup() {
   const [lesson, setLesson] = useState<Lesson | null>(null)
   const [script, setScript] = useState('')
   const [wrongs, setWrongs] = useState<WrongBlock[]>([])
+  /* Ön test / son test — ders akışının iki ucundaki ölçümler */
+  const [pretest, setPretest] = useState<QuizQuestion[]>([])
+  const [posttest, setPosttest] = useState<QuizQuestion[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
 
@@ -57,6 +64,13 @@ export default function AmfiSetup() {
   const [soruAcik, setSoruAcik] = useState(false)
   const [zorluk, setZorluk] = useState<Zorluk>('orta')
   const [uretiliyor, setUretiliyor] = useState(false)
+
+  /* Metinde arama — uzun notta hatayı gözle aramak yerine */
+  const [arama, setArama] = useState('')
+  /* Hocanın kendi ses kaydı — dosya bu cihazda saklanır (AudioUploader) */
+  const [sesKaydi, setSesKaydi] = useState<DersSesi | null>(null)
+  /** Metin düzenlenirken yeri bulunamayıp düşen işaretler */
+  const [dusenler, setDusenler] = useState<string[]>([])
 
   /* ── Dersi getir, notu ön-doldur ── */
   useEffect(() => {
@@ -73,6 +87,9 @@ export default function AmfiSetup() {
       if (l?.wrongBlocks?.length) {
         setWrongs(l.wrongBlocks)
       }
+      // Testler derse kayıtlı — bir sonraki oturumda yeniden yüklemek gerekmesin
+      if (l?.pretest?.length) setPretest(l.pretest)
+      if (l?.posttest?.length) setPosttest(l.posttest)
       setLoading(false)
     })
     return () => {
@@ -81,6 +98,44 @@ export default function AmfiSetup() {
   }, [lessonId])
 
   const selectedText = selection ? script.slice(selection.start, selection.end).trim() : ''
+
+  /** Arama sonuçları — işaretli olanlar ayrıca gösteriliyor */
+  const eslesmeler = useMemo<Eslesme[]>(() => ara(script, arama, wrongs), [script, arama, wrongs])
+
+  /**
+   * Arama sonucuna tıklayınca o aralığı seç: textarea'da gerçekten
+   * seçili hâle getiriyoruz ki hoca nereye baktığını görsün.
+   */
+  /**
+   * Arama sonucundan doğrudan tuzağa: eşleşmenin geçtiği CÜMLEYİ seçer.
+   * Tuzak tek bir kelime değil, öğrencinin duyup yakalayacağı bir ifadedir;
+   * hocayı metinde fareyle cümle avlamaya zorlamıyoruz.
+   */
+  const eslesmeyiIsaretle = (m: Eslesme) => {
+    const c = cumleAraligi(script, m.start, m.end)
+    setSelection(c)
+    const el = areaRef.current
+    if (el) {
+      el.focus()
+      el.setSelectionRange(c.start, c.end)
+    }
+    // Form listenin altında açılıyor — hoca aramayı bırakıp oraya baksın
+    setTimeout(
+      () => document.getElementById('isaretleme-formu')?.scrollIntoView({ block: 'center' }),
+      80,
+    )
+  }
+
+  const eslesmeyeGit = (m: Eslesme) => {
+    setSelection({ start: m.start, end: m.end })
+    const el = areaRef.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(m.start, m.end)
+    // Seçili yeri görünür alana getir: kaba ama textarea'da tek yol
+    const oran = script.length ? m.start / script.length : 0
+    el.scrollTop = Math.max(0, oran * el.scrollHeight - el.clientHeight / 2)
+  }
 
   /** Seçim mevcut bir işaretle çakışıyor mu? */
   const cakisan = useMemo(() => {
@@ -98,7 +153,12 @@ export default function AmfiSetup() {
     if (!el) return
     const { selectionStart: start, selectionEnd: end } = el
     if (start === null || end === null || start === end) return
-    setSelection({ start, end })
+    // Fare seçimi neredeyse her zaman baştan/sondan boşluk kapıyor.
+    // Aralığı kırpmazsak kaydedilen (kırpılmış) metinle örtüşmüyor ve
+    // işaret ilk metin düzenlemesinde kayboluyordu.
+    const kirpik = trimRange(script, start, end)
+    if (kirpik.start === kirpik.end) return
+    setSelection(kirpik)
   }
 
   const formuTemizle = () => {
@@ -176,6 +236,10 @@ export default function AmfiSetup() {
     setWrongs((list) =>
       [...list, w].sort((a, b) => a.start - b.start).map((x, i) => ({ ...x, blockIndex: i })),
     )
+    toast(
+      `${wrongs.length + 1}. hata işaretlendi. İstediğin kadar ekleyebilirsin.`,
+      'success',
+    )
     formuTemizle()
   }
 
@@ -185,14 +249,26 @@ export default function AmfiSetup() {
     )
 
   /**
-   * Metin değişince karakter aralıkları kayar. Metnin kısaldığı ya da
-   * işaretin altındaki yazının değiştiği durumda o işaret artık yanlış yeri
-   * gösterir — sessizce yanlış puanlamaktansa düşürüyoruz.
+   * Metin değişince karakter aralıkları kayar.
+   *
+   * Eskiden kayan her işaret SESSİZCE siliniyordu: hoca üç beş hata
+   * işaretleyip metne dokununca hepsi birden uçuyor, geriye tek işaret
+   * kalıyordu. Artık işaretin metnini yeni konumunda arayıp taşıyoruz;
+   * yalnızca gerçekten kaybolanı düşürüyor ve hocaya söylüyoruz.
    */
   useEffect(() => {
     setWrongs((list) => {
-      const kalan = list.filter((w) => w.end <= script.length && script.slice(w.start, w.end) === w.text)
-      return kalan.length === list.length ? list : kalan.map((x, i) => ({ ...x, blockIndex: i }))
+      if (!list.length) return list
+      const { wrongs: yeni, tasinan, dusen } = reanchorWrongs(script, list)
+      if (dusen.length) {
+        setDusenler(dusen)
+      } else if (tasinan.length) {
+        setDusenler([])
+      }
+      const degisti =
+        yeni.length !== list.length ||
+        yeni.some((w, i) => w.start !== list[i]?.start || w.end !== list[i]?.end)
+      return degisti ? yeni : list
     })
   }, [script])
 
@@ -207,13 +283,39 @@ export default function AmfiSetup() {
       return
     }
 
+    // Yarım kalmış sorular (metni ya da şıkları eksik) teste girmesin
+    const temizle = (list: QuizQuestion[]) =>
+      list
+        .map((q) => ({ ...q, options: q.options.map((o) => o.trim()).filter(Boolean) }))
+        .filter((q) => q.question.trim() && q.options.length >= 2)
+        .map((q) => ({ ...q, correctIndex: Math.min(q.correctIndex, q.options.length - 1) }))
+
+    const on = temizle(pretest)
+    const son = temizle(posttest)
+
+    if (pretest.length !== on.length || posttest.length !== son.length) {
+      const atilan = pretest.length - on.length + (posttest.length - son.length)
+      if (
+        !window.confirm(
+          `${atilan} soru eksik (soru metni ya da en az 2 şık gerekiyor) ve teste alınmayacak. Devam edeyim mi?`,
+        )
+      )
+        return
+    }
+
     setBusy(true)
     try {
+      // Testler derse de yazılıyor: bir sonraki oturumda hazır gelsinler
+      await api.saveLesson({ ...lesson, script, wrongBlocks: wrongs, pretest: on, posttest: son })
+
       const session = await ses.createSession(lesson, user.uid, user.name, {
         version: 2,
         readingMode: 'continuous',
         script,
         wrongBlocks: wrongs,
+        pretest: on,
+        posttest: son,
+        audio: sesKaydi ? kunye(sesKaydi) : null,
       })
       navigate(`/hoca/amfi-host-v2/${lesson.id}?sessionId=${session.id}`)
     } catch (err) {
@@ -262,6 +364,8 @@ export default function AmfiSetup() {
         </p>
       </motion.div>
 
+      <AudioUploader lessonId={lesson.id} onChange={setSesKaydi} />
+
       {/* Ders notu */}
       <div className="file-card space-y-3 p-6">
         <div className="flex flex-wrap items-baseline justify-between gap-3">
@@ -269,7 +373,10 @@ export default function AmfiSetup() {
             DERS NOTU
           </label>
           <span className="label">
-            {script.length} KARAKTER · ~{okumaDk} DK OKUMA
+            {script.length} KARAKTER ·{' '}
+            {sesKaydi
+              ? `KAYIT ${sureMetni(sesKaydi.durationMs)}`
+              : `~${okumaDk} DK OKUMA`}
           </span>
         </div>
         <textarea
@@ -286,7 +393,114 @@ export default function AmfiSetup() {
         />
         <p className="text-xs text-ink-muted">
           Yanlış olan yeri fareyle seç — aşağıda işaretleme formu açılır.
+          İstediğin kadar yer işaretleyebilirsin.
         </p>
+
+        {/* ── Metinde ara ──
+            Uzun ders notunda hatayı satır satır okuyarak aramak yerine
+            terimi yaz, eşleşmeye tıkla; ilgili yer seçili gelsin. */}
+        <div className="rounded-sm border border-paper-edge bg-paper-deep p-4">
+          <label className="field-label" htmlFor="ara">
+            METİNDE ARA
+          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <input
+              id="ara"
+              value={arama}
+              onChange={(e) => setArama(e.target.value)}
+              className="field flex-1 min-w-[220px] text-sm"
+              placeholder="Örn. humerus, radius, 12 çift…"
+              autoComplete="off"
+            />
+            {arama.trim().length >= 2 && (
+              <span className="label whitespace-nowrap">
+                {eslesmeler.length} EŞLEŞME
+              </span>
+            )}
+            {arama && (
+              <button
+                type="button"
+                onClick={() => setArama('')}
+                className="text-xs font-semibold text-ink-muted underline underline-offset-2 hover:text-ink"
+              >
+                Temizle
+              </button>
+            )}
+          </div>
+
+          {arama.trim().length >= 2 && (
+            <div className="mt-3 max-h-64 space-y-1.5 overflow-y-auto">
+              {eslesmeler.length === 0 ? (
+                <p className="py-4 text-center text-sm text-ink-muted">
+                  Bu metinde geçmiyor.
+                </p>
+              ) : (
+                eslesmeler.map((m) => (
+                  <div
+                    key={m.start}
+                    className={cx(
+                      'flex items-start gap-3 rounded-sm border-l-4 bg-paper-card px-3 py-2',
+                      m.isaretli ? 'border-l-mark' : 'border-l-paper-edge',
+                    )}
+                  >
+                    <span className="mt-1 font-mono text-[10px] font-bold text-ink-faint">
+                      {m.start}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => eslesmeyeGit(m)}
+                      className="min-w-0 flex-1 text-left font-serif text-sm leading-snug text-ink hover:underline"
+                      title="Bu yeri metinde seç"
+                    >
+                      {m.onizleme.slice(0, m.vurguStart)}
+                      <mark className="bg-flag-soft font-semibold text-ink">
+                        {m.onizleme.slice(m.vurguStart, m.vurguEnd)}
+                      </mark>
+                      {m.onizleme.slice(m.vurguEnd)}
+                    </button>
+                    {/* Aramadan doğrudan tuzak: metinde fareyle cümle avlamaya gerek yok */}
+                    {m.isaretli ? (
+                      <span className="label-chip mt-0.5 shrink-0 border-mark bg-mark-soft text-mark">
+                        İŞARETLİ
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => eslesmeyiIsaretle(m)}
+                        className="mt-0.5 shrink-0 rounded-sm border border-mark px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-mark transition-colors hover:bg-mark hover:text-paper"
+                      >
+                        TUZAK YAP
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Metin düzenlenirken yeri kaybolan işaretler */}
+        {dusenler.length > 0 && (
+          <div className="rounded-sm border-l-2 border-flag bg-flag-soft p-4 text-[12px] leading-relaxed text-ink">
+            <div className="flex items-start justify-between gap-3">
+              <p>
+                <strong className="font-semibold">
+                  {dusenler.length} işaret düştü:
+                </strong>{' '}
+                metni değiştirdiğin için şu yerler artık bulunamıyor —{' '}
+                {dusenler.map((d) => `“${d}”`).join(', ')}. Yeni hâllerini tekrar
+                işaretlemen gerekiyor.
+              </p>
+              <button
+                type="button"
+                onClick={() => setDusenler([])}
+                className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-ink-muted hover:text-ink"
+              >
+                KAPAT
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* İşaretleme formu */}
@@ -296,6 +510,7 @@ export default function AmfiSetup() {
             initial={{ opacity: 0, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
+            id="isaretleme-formu"
             className="file-card space-y-5 border-l-4 border-l-mark p-6"
           >
             <div>
@@ -455,19 +670,36 @@ export default function AmfiSetup() {
               )}
             </div>
 
-            <div className="flex flex-wrap gap-3">
-              <Button3D
-                type="button"
-                onClick={ekle}
-                size="md"
-                tone="danger"
-                disabled={!explanation.trim() || !!cakisan}
-              >
-                Yanlış Olarak İşaretle
-              </Button3D>
-              <Button3D type="button" onClick={formuTemizle} size="md" tone="ghost">
-                Vazgeç
-              </Button3D>
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-3">
+                <Button3D
+                  type="button"
+                  onClick={ekle}
+                  size="md"
+                  tone="danger"
+                  disabled={!explanation.trim() || !!cakisan}
+                >
+                  {soru.question.trim() ? 'Yanlış Olarak İşaretle (soruyla)' : 'Yanlış Olarak İşaretle'}
+                </Button3D>
+                <Button3D type="button" onClick={formuTemizle} size="md" tone="ghost">
+                  Vazgeç
+                </Button3D>
+                {cakisan && (
+                  <Button3D type="button" size="md" tone="ghost" onClick={() => sil(cakisan.start)}>
+                    Çakışan Tuzağı Sil
+                  </Button3D>
+                )}
+              </div>
+
+              {/* Düğme kapalıysa sebebini söyle — sessiz kalan düğme
+                  "ikinci hatayı ekleyemiyorum" diye geri dönüyordu. */}
+              {(!explanation.trim() || cakisan) && (
+                <p className="text-xs leading-relaxed text-mark">
+                  {cakisan
+                    ? 'Seçtiğin yer mevcut bir işaretle çakışıyor. Çakışmayan bir aralık seç ya da eski işareti sil.'
+                    : 'Hatanın neden yanlış olduğunu yazınca işaretlenebilir. Ek soru zorunlu değil.'}
+                </p>
+              )}
             </div>
           </motion.div>
         )}
@@ -510,6 +742,34 @@ export default function AmfiSetup() {
           </div>
         </div>
       )}
+
+      {/* ── ÖN TEST / SON TEST ──
+          Ders akışı: ön test → dersi dinle → son test. İki testin farkı
+          dersin öğrenciye ne kattığını gösteriyor, araştırmanın verisi bu. */}
+      <div className="file-card p-6">
+        <p className="label font-bold">ÖLÇME TESTLERİ</p>
+        <p className="mt-2 text-sm leading-relaxed text-ink-muted">
+          Öğrenciler önce <strong className="text-ink">ön testi</strong> çözer, sonra dersi
+          dinler, en sonunda <strong className="text-ink">son testi</strong> çözer. İki testi de
+          boş bırakabilirsin — o zaman doğrudan derse geçilir.
+        </p>
+      </div>
+
+      <QuizUploader
+        baslik="ÖN TEST · DERSTEN ÖNCE"
+        aciklama="Öğrenci dersi dinlemeden bu testi çözer. Başlangıç seviyesini ölçer."
+        tone="pre"
+        questions={pretest}
+        onChange={setPretest}
+      />
+
+      <QuizUploader
+        baslik="SON TEST · DERSTEN SONRA"
+        aciklama="Ders bittiğinde aynı öğrenciler bunu çözer. Ön testle farkı öğrenmeyi gösterir."
+        tone="post"
+        questions={posttest}
+        onChange={setPosttest}
+      />
 
       {/* Başlat */}
       <div className="flex flex-wrap gap-3">

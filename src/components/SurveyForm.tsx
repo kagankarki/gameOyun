@@ -16,6 +16,8 @@ import * as ses from '@/lib/session'
 import {
   ACIK_UCLU,
   ALT_BOYUTLAR,
+  CALISMA_BASLIGI,
+  CALISMA_BASLIGI_KISA,
   GENEL_SORULAR,
   LIKERT_ETIKETLERI,
   TOPLAM_MADDE,
@@ -95,8 +97,11 @@ export default function SurveyForm({ sessionId, participant }: Props) {
       <div className="file-card p-6">
         <p className="label">ARAŞTIRMA ANKETİ</p>
         <h3 className="mt-2 font-display text-lg font-bold text-ink">
-          Kasıtlı Hata Temelli Anatomi Eğitimi
+          {CALISMA_BASLIGI_KISA}
         </h3>
+        <p className="mt-1.5 text-[12px] leading-relaxed text-ink-faint">
+          {CALISMA_BASLIGI}
+        </p>
         <p className="mt-2 text-sm leading-relaxed text-ink-muted">
           Bu form, uygulanan derse ilişkin öğrenme deneyimini değerlendirmek için hazırlandı.
           Yanıtların yalnızca bilimsel araştırma kapsamında kullanılacak ve{' '}

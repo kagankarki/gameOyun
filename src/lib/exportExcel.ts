@@ -3,12 +3,13 @@
  * Oturum sonuçları, öğrenci skorları, soru analizleri, araştırma anketi ve değerlendirmeleri
  * Microsoft Excel ile %100 uyumlu, sekmeli (multi-sheet), renkli ve biçimlendirilmiş .xls formatında üretir.
  */
-import { altBoyutOrtalamalari } from './survey'
+import { altBoyutOrtalamalari, CALISMA_BASLIGI } from './survey'
 import type {
   Catch,
   Lesson,
   LiveSession,
   Participant,
+  QuizAnswer,
   SessionRating,
   SessionSecret,
   SurveyResponse,
@@ -23,6 +24,8 @@ export interface ExportData {
   secret: SessionSecret | null
   surveys: SurveyResponse[]
   ratings: SessionRating[]
+  /** Ön test / son test kâğıtları — hoca cihazında notlanmış hâlleri */
+  quizAnswers?: QuizAnswer[]
 }
 
 function xmlEscape(val: any): string {
@@ -57,6 +60,7 @@ function makeRow(cells: string[], height = 22): string {
  */
 export function exportSessionToExcel(data: ExportData) {
   const { lesson, session, participants, catches, secret, surveys, ratings } = data
+  const quizAnswers = data.quizAnswers ?? []
 
   const hitsTotal = participants.reduce((s, p) => s + p.hits, 0)
   const missesTotal = participants.reduce((s, p) => s + p.misses, 0)
@@ -116,6 +120,7 @@ export function exportSessionToExcel(data: ExportData) {
       ],
       32,
     ),
+    makeRow([makeCell(CALISMA_BASLIGI, 'sFaint', 'String', 4)], 34),
     makeRow([makeCell(`Rapor Tarihi: ${new Date().toLocaleString('tr-TR')}`, 'sFaint', 'String', 4)], 18),
     makeRow([]), // boş satır
     makeRow([makeCell('1. OTURUM KİMLİK BİLGİLERİ', 'sSectionHeader', 'String', 4)], 24),
@@ -457,6 +462,110 @@ export function exportSessionToExcel(data: ExportData) {
   }
 
   // ══════════════════════════════════════════════════════════════════
+  // SAYFA 6: ÖN TEST — SON TEST KARŞILAŞTIRMASI
+  // Araştırmanın asıl ölçümü: aynı öğrencinin ders öncesi ve sonrası
+  // başarısı ile aradaki fark (kazanım).
+  // ══════════════════════════════════════════════════════════════════
+  const preByPart = new Map(quizAnswers.filter((a) => a.kind === 'pre').map((a) => [a.participantId, a]))
+  const postByPart = new Map(quizAnswers.filter((a) => a.kind === 'post').map((a) => [a.participantId, a]))
+
+  const yuzde = (a: QuizAnswer | undefined) =>
+    a?.percent !== undefined ? a.percent : null
+
+  const sheet6Rows: string[] = [
+    makeRow(
+      [makeCell('ÖN TEST — SON TEST KARŞILAŞTIRMASI (ÖĞRENME KAZANIMI)', 'sMainTitle', 'String', 7)],
+      30,
+    ),
+    makeRow([
+      makeCell('Sıra', 'sHeaderCenter'),
+      makeCell('Öğrenci Adı Soyadı', 'sHeaderLeft'),
+      makeCell('Ön Test Doğru', 'sHeaderCenter'),
+      makeCell('Ön Test %', 'sHeaderCenter'),
+      makeCell('Son Test Doğru', 'sHeaderCenter'),
+      makeCell('Son Test %', 'sHeaderCenter'),
+      makeCell('Değişim (puan)', 'sHeaderCenter'),
+      makeCell('Durum', 'sHeaderCenter'),
+    ], 26),
+  ]
+
+  if (!quizAnswers.length) {
+    sheet6Rows.push(
+      makeRow(
+        [makeCell('Bu oturumda ön test / son test uygulanmadı.', 'sDataCenter', 'String', 7)],
+        26,
+      ),
+    )
+  } else {
+    const satirlar = participants
+      .map((p) => {
+        const pre = preByPart.get(p.id)
+        const post = postByPart.get(p.id)
+        const preP = yuzde(pre)
+        const postP = yuzde(post)
+        return {
+          ad: p.name,
+          pre,
+          post,
+          preP,
+          postP,
+          fark: preP !== null && postP !== null ? postP - preP : null,
+        }
+      })
+      .sort((a, b) => (b.fark ?? -999) - (a.fark ?? -999))
+
+    satirlar.forEach((r, idx) => {
+      sheet6Rows.push(
+        makeRow([
+          makeCell(idx + 1, 'sDataCenter', 'Number'),
+          makeCell(r.ad, 'sDataBold'),
+          makeCell(r.pre ? `${r.pre.correctCount ?? '-'}/${r.pre.total ?? '-'}` : '—', 'sDataCenter'),
+          makeCell(r.preP === null ? '—' : r.preP, 'sDataCenter', r.preP === null ? 'String' : 'Number'),
+          makeCell(r.post ? `${r.post.correctCount ?? '-'}/${r.post.total ?? '-'}` : '—', 'sDataCenter'),
+          makeCell(r.postP === null ? '—' : r.postP, 'sDataCenter', r.postP === null ? 'String' : 'Number'),
+          makeCell(r.fark === null ? '—' : r.fark, 'sDataCenter', r.fark === null ? 'String' : 'Number'),
+          makeCell(
+            r.fark === null
+              ? 'Eksik ölçüm'
+              : r.fark > 0
+                ? 'Yükseldi'
+                : r.fark < 0
+                  ? 'Düştü'
+                  : 'Değişmedi',
+            'sDataCenter',
+          ),
+        ], 24),
+      )
+    })
+
+    // Sınıf ortalamaları
+    const ort = (list: (number | null)[]) => {
+      const v = list.filter((x): x is number => x !== null)
+      return v.length ? Math.round(v.reduce((t, x) => t + x, 0) / v.length) : null
+    }
+    const preOrt = ort(satirlar.map((r) => r.preP))
+    const postOrt = ort(satirlar.map((r) => r.postP))
+
+    sheet6Rows.push(makeRow([]))
+    sheet6Rows.push(
+      makeRow([
+        makeCell('', 'sDataCenter'),
+        makeCell('SINIF ORTALAMASI', 'sHeaderLeft'),
+        makeCell('', 'sDataCenter'),
+        makeCell(preOrt === null ? '—' : preOrt, 'sDataCenter', preOrt === null ? 'String' : 'Number'),
+        makeCell('', 'sDataCenter'),
+        makeCell(postOrt === null ? '—' : postOrt, 'sDataCenter', postOrt === null ? 'String' : 'Number'),
+        makeCell(
+          preOrt === null || postOrt === null ? '—' : postOrt - preOrt,
+          'sDataCenter',
+          preOrt === null || postOrt === null ? 'String' : 'Number',
+        ),
+        makeCell('', 'sDataCenter'),
+      ], 26),
+    )
+  }
+
+  // ══════════════════════════════════════════════════════════════════
   // SPREADSHEETML XML ÇERÇEVESİ VE STİLLER
   // ══════════════════════════════════════════════════════════════════
   const xmlWorkbook = `<?xml version="1.0" encoding="UTF-8"?>
@@ -467,7 +576,7 @@ export function exportSessionToExcel(data: ExportData) {
  xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
  xmlns:html="http://www.w3.org/TR/REC-html40">
   <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
-    <Title>Gazi Üniversitesi - Hatayı Yakala Oturum Raporu</Title>
+    <Title>${xmlEscape(CALISMA_BASLIGI)}</Title>
     <Author>Prof. Dr. Tuncay Peker - Gazi Üniversitesi</Author>
     <Created>${new Date().toISOString()}</Created>
   </DocumentProperties>

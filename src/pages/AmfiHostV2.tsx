@@ -19,6 +19,7 @@ import QRCode from 'qrcode'
 
 import Button3D from '@/components/Button3D'
 import Loader from '@/components/Loader'
+import QuizComparison from '@/components/QuizComparison'
 import { RatingSummary } from '@/components/Rating'
 import { useToast } from '@/components/Toast'
 import VoiceSelector from '@/components/VoiceSelector'
@@ -30,13 +31,17 @@ import {
   getTurkishVoice,
   isElevenLabsConfigured,
   isSpeechSupported,
+  playAudioFile,
   speak,
 } from '@/lib/speech'
+import { sesGetir, sesKaydet, sureMetni, type DersSesi } from '@/lib/audioStore'
 import type {
   Catch,
   Lesson,
   LiveSession,
   Participant,
+  QuizAnswer,
+  QuizKind,
   SessionRating,
   SessionSecret,
 } from '@/lib/types'
@@ -60,10 +65,14 @@ export default function AmfiHostV2() {
   const [participants, setParticipants] = useState<Participant[]>([])
   const [catches, setCatches] = useState<Catch[]>([])
   const [ratings, setRatings] = useState<SessionRating[]>([])
+  const [quizAnswers, setQuizAnswers] = useState<QuizAnswer[]>([])
   const [qr, setQr] = useState('')
   const [voice, setVoice] = useState<SpeechSynthesisVoice | null>(null)
   const [voiceError, setVoiceError] = useState<string | null>(null)
   const [charIndex, setCharIndex] = useState(0)
+  /** Hocanın yüklediği ders kaydı — bu cihazda duruyor */
+  const [sesKaydi, setSesKaydi] = useState<DersSesi | null>(null)
+  const sesInputRef = useRef<HTMLInputElement>(null)
   const [loading, setLoading] = useState(true)
 
   /* Kapanışlarda bayatlamasın diye canlı referanslar */
@@ -79,6 +88,8 @@ export default function AmfiHostV2() {
   const seen = useRef(new Set<string>())
   /** Cevabı bir kez notlansın */
   const graded = useRef(new Set<string>())
+  /** Ön/son test kâğıdı bir kez notlansın */
+  const quizGraded = useRef(new Set<string>())
   /** Sırayla işle — paralel giderse aynı öğrencinin puanı ezilir */
   const queue = useRef<Promise<void>>(Promise.resolve())
 
@@ -154,13 +165,26 @@ export default function AmfiHostV2() {
     const b = ses.watchCatches(sessionId, setCatches)
     const c = ses.watchRatings(sessionId, setRatings)
     const d = ses.watchSessionSecret(sessionId, setSecret)
+    const e = ses.watchQuizAnswers(sessionId, setQuizAnswers)
     return () => {
       a()
       b()
       c()
       d()
+      e()
     }
   }, [sessionId])
+
+  /* ── Bu ders için yüklenmiş kayıt bu cihazda var mı? ── */
+  useEffect(() => {
+    const dersId = lessonId || session?.lessonId
+    if (!dersId) return
+    let alive = true
+    void sesGetir(dersId).then((k) => alive && setSesKaydi(k))
+    return () => {
+      alive = false
+    }
+  }, [lessonId, session?.lessonId])
 
   /* ── Türkçe ses ── */
   useEffect(() => {
@@ -200,7 +224,12 @@ export default function AmfiHostV2() {
     marksRef.current = []
     setCharIndex(0)
 
-    speakRef.current = speak(sec.script, voice, {
+    /**
+     * Ortak geri çağrılar: dersi TTS mi okuyor yoksa hocanın kaydı mı
+     * çalıyor, aşağısı için fark etmiyor — ikisi de (an, karakter)
+     * çizelgesini aynı şekilde besliyor.
+     */
+    const kancalar = {
       onStart: () => {
         // Pencere TAM BURADA açılır — speak() ile ses arasında ~1 sn var
         const t = Date.now()
@@ -209,13 +238,13 @@ export default function AmfiHostV2() {
         if (cur) {
           void ses.saveSession({
             ...cur,
-            phase: 'speaking',
+            phase: 'speaking' as const,
             blockStartedAt: t,
             blockDurationMs: 0,
           })
         }
       },
-      onBoundary: (i) => {
+      onBoundary: (i: number) => {
         marksRef.current.push({ t: Date.now(), i })
         setCharIndex(i)
       },
@@ -226,13 +255,29 @@ export default function AmfiHostV2() {
         // basışlar işlensin diye biraz bekleyip bitiriyoruz.
         await ses.saveSession({
           ...s2,
-          phase: 'grace',
+          phase: 'grace' as const,
           blockDurationMs: Date.now() - s2.blockStartedAt,
         })
       },
-      onError: (m) => toast(m, 'error'),
-    })
-  }, [participants.length, voice, toast])
+      onError: (m: string) => toast(m, 'error'),
+    }
+
+    /* Oturum bir ses kaydıyla açıldıysa dersi o kayıt anlatır. */
+    if (s.audio) {
+      if (!sesKaydi) {
+        toast(
+          `Bu oturum “${s.audio.name}” kaydıyla açılmış ama dosya bu cihazda yok. ` +
+            'Aşağıdan dosyayı yeniden seç.',
+          'error',
+        )
+        return
+      }
+      speakRef.current = playAudioFile(sesKaydi.blob, sec.script.length, kancalar)
+      return
+    }
+
+    speakRef.current = speak(sec.script, voice, kancalar)
+  }, [participants.length, voice, toast, sesKaydi])
 
   /* ── Gelen basışları çöz ── */
   useEffect(() => {
@@ -301,14 +346,105 @@ export default function AmfiHostV2() {
     }
   }, [catches, secret])
 
+  /* ══════════════ ÖN TEST / SON TEST ══════════════ */
+
+  /** Gelen test kâğıtlarını notla — doğru şıklar yalnızca bu cihazda. */
+  useEffect(() => {
+    const sec = secretRef.current
+    if (!sec) return
+
+    const bekleyen = quizAnswers.filter(
+      (a) => a.gradedAt === undefined && !quizGraded.current.has(a.id),
+    )
+    for (const a of bekleyen) {
+      quizGraded.current.add(a.id)
+      queue.current = queue.current.then(async () => {
+        const gizli = secretRef.current
+        if (!gizli) return
+        const sorular = (a.kind === 'pre' ? gizli.pretest : gizli.posttest) ?? []
+        if (!sorular.length) return
+        try {
+          await ses.gradeQuizAnswer(a, sorular)
+        } catch (err) {
+          console.error('[amfi] test notlanamadı:', err)
+          quizGraded.current.delete(a.id)
+        }
+      })
+    }
+  }, [quizAnswers, secret])
+
+  /** Oturum bir kayıtla açıldı ama dosya bu cihazda yoksa yeniden seçtir. */
+  const sesiYenidenSec = async (file: File | undefined) => {
+    const dersId = lessonId || sessionRef.current?.lessonId
+    if (!file || !dersId) return
+    try {
+      const kayit = await sesKaydet(dersId, file)
+      setSesKaydi(kayit)
+      toast('Ses kaydı bu cihaza alındı. Artık dersi başlatabilirsin.', 'success')
+    } catch (err) {
+      toast('Ses kaydedilemedi: ' + (err as Error).message, 'error')
+    } finally {
+      if (sesInputRef.current) sesInputRef.current.value = ''
+    }
+  }
+
+  const testiBaslat = async (kind: QuizKind) => {
+    const s = sessionRef.current
+    const sec = secretRef.current
+    if (!s || !sec) return
+    const sorular = (kind === 'pre' ? sec.pretest : sec.posttest) ?? []
+    if (!sorular.length) {
+      toast('Bu test için yüklenmiş soru yok.', 'error')
+      return
+    }
+    try {
+      await ses.startQuiz(s, kind, sorular)
+    } catch (err) {
+      toast((err as Error).message || 'Test açılamadı.', 'error')
+    }
+  }
+
+  /**
+   * Ön test biterse lobiye döneriz (hoca dersi başlatır),
+   * son test biterse ders kapanır.
+   */
+  const testiBitir = async () => {
+    const s = sessionRef.current
+    if (!s?.activeQuiz) return
+    const kind = s.activeQuiz.kind
+    const bekleyen = partsRef.current.length - quizAnswers.filter((a) => a.kind === kind).length
+    if (
+      bekleyen > 0 &&
+      !window.confirm(`${bekleyen} kişi henüz göndermedi. Testi yine de kapatayım mı?`)
+    )
+      return
+    await queue.current
+    await ses.endQuiz(s, kind === 'pre' ? 'lobby' : 'ended')
+  }
+
   const bitir = async () => {
-    if (!window.confirm('Dersi bitirmek istediğine emin misin?')) return
-    speakRef.current?.cancel()
-    cancelSpeech()
     const s = sessionRef.current
     if (!s) return
+    const sonTestVar = (secretRef.current?.posttest?.length ?? 0) > 0
+
+    if (
+      !window.confirm(
+        sonTestVar
+          ? 'Okuma bitsin ve SON TEST açılsın mı?'
+          : 'Dersi bitirmek istediğine emin misin?',
+      )
+    )
+      return
+
+    speakRef.current?.cancel()
+    cancelSpeech()
     await queue.current
     await ses.markMissedWrongs(s.wrongCount, partsRef.current, catchesRef.current)
+
+    if (sonTestVar) {
+      await testiBaslat('post')
+      return
+    }
     await ses.saveSession({ ...s, phase: 'ended' })
   }
 
@@ -333,6 +469,13 @@ export default function AmfiHostV2() {
 
   const hits = catches.filter((c) => c.status === 'hit')
   const yakalananHatalar = new Set(hits.map((c) => c.wrongIndex))
+
+  /* ── Ön/son test durumu ── */
+  const onTestSorulari = secret?.pretest ?? []
+  const sonTestSorulari = secret?.posttest ?? []
+  const onTestKagitlari = quizAnswers.filter((a) => a.kind === 'pre')
+  const sonTestKagitlari = quizAnswers.filter((a) => a.kind === 'post')
+  const onTestBitti = onTestKagitlari.length > 0 && session?.phase !== 'pretest'
 
   if (loading) return <Loader label="Oturum yükleniyor…" />
 
@@ -373,7 +516,7 @@ export default function AmfiHostV2() {
               {session.lessonTitle}
             </h1>
           </div>
-          {isElevenLabsConfigured() && (
+          {isElevenLabsConfigured() && !session.audio && (
             <div className="flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-1.5 text-xs font-semibold text-emerald-800">
               <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
               ElevenLabs Doğal AI Seslendirme Aktif
@@ -382,7 +525,7 @@ export default function AmfiHostV2() {
         </div>
         <div className="rule mt-7" />
 
-        {voiceError && (
+        {voiceError && !session.audio && (
           <div className="mt-6 rounded-sm border-l-2 border-mark bg-mark-soft p-4 text-sm leading-relaxed text-ink">
             <strong className="font-semibold">Ses sorunu:</strong> {voiceError}
           </div>
@@ -451,9 +594,91 @@ export default function AmfiHostV2() {
               </div>
             </div>
 
+            {/* Ölçme testleri — akış: ön test → ders → son test */}
+            {(onTestSorulari.length > 0 || sonTestSorulari.length > 0) && (
+              <div className="mt-5 rounded-sm border border-paper-edge bg-paper-deep p-4">
+                <p className="label font-bold">ÖLÇME TESTLERİ</p>
+                <div className="mt-3 space-y-2 text-sm text-ink">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Ön test · {onTestSorulari.length} soru</span>
+                    <span
+                      className={cx(
+                        'font-mono text-[11px] font-bold uppercase tracking-[0.14em]',
+                        onTestBitti ? 'text-verify' : 'text-ink-muted',
+                      )}
+                    >
+                      {onTestSorulari.length === 0
+                        ? 'YOK'
+                        : onTestBitti
+                          ? `✓ ${onTestKagitlari.length} KAĞIT`
+                          : 'BEKLİYOR'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Son test · {sonTestSorulari.length} soru</span>
+                    <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-ink-muted">
+                      {sonTestSorulari.length === 0 ? 'YOK' : 'DERS SONUNDA'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Ders neyle anlatılacak? */}
+            {session.audio && (
+              <div
+                className={cx(
+                  'mt-5 rounded-sm border-l-4 p-4',
+                  sesKaydi ? 'border-l-verify bg-verify-soft' : 'border-l-mark bg-mark-soft',
+                )}
+              >
+                <p className="label font-bold">DERS SES KAYDIYLA ANLATILACAK</p>
+                <p className="mt-2 text-sm leading-relaxed text-ink">
+                  {session.audio.name} · {sureMetni(session.audio.durationMs)}
+                </p>
+                {!sesKaydi && (
+                  <>
+                    <p className="mt-2 text-sm leading-relaxed text-ink">
+                      Dosya <strong className="font-semibold">bu cihazda bulunamadı</strong> —
+                      kayıt hocanın kendi bilgisayarında saklanıyor. Aynı dosyayı seçersen ders
+                      başlayabilir.
+                    </p>
+                    <div className="mt-3">
+                      <Button3D size="sm" onClick={() => sesInputRef.current?.click()}>
+                        Ses Dosyasını Seç
+                      </Button3D>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            <input
+              ref={sesInputRef}
+              type="file"
+              accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac"
+              className="hidden"
+              onChange={(e) => void sesiYenidenSec(e.target.files?.[0])}
+            />
+
             <div className="mt-auto flex flex-wrap gap-3 pt-8">
-              <Button3D size="lg" onClick={basla} disabled={!!voiceError || !script}>
-                Dersi Başlat
+              {onTestSorulari.length > 0 && !onTestBitti && (
+                <Button3D
+                  size="lg"
+                  onClick={() => testiBaslat('pre')}
+                  disabled={!participants.length}
+                >
+                  Ön Testi Başlat
+                </Button3D>
+              )}
+              <Button3D
+                size="lg"
+                tone={onTestSorulari.length > 0 && !onTestBitti ? 'ghost' : 'primary'}
+                onClick={basla}
+                /* Ses kaydıyla anlatılacaksa TTS'in çalışması gerekmiyor */
+                disabled={session.audio ? !sesKaydi || !script : !!voiceError || !script}
+              >
+                {onTestSorulari.length > 0 && !onTestBitti ? 'Ön Testi Atla · Dersi Başlat' : 'Dersi Başlat'}
               </Button3D>
               <Button3D size="lg" tone="ghost" onClick={() => nav('/hoca')}>
                 Vazgeç
@@ -462,9 +687,142 @@ export default function AmfiHostV2() {
           </div>
         </div>
 
-        {/* Seslendirme & Ton Seçici */}
-        <div className="mt-6">
-          <VoiceSelector onSelect={() => getTurkishVoice().then((v) => v && setVoice(v))} />
+        {/* Seslendirme & Ton Seçici — ders kayıtla anlatılacaksa gereksiz */}
+        {!session.audio && (
+          <div className="mt-6">
+            <VoiceSelector onSelect={() => getTurkishVoice().then((v) => v && setVoice(v))} />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  /* ══════════════ ÖN TEST / SON TEST ══════════════ */
+  if (session.phase === 'pretest' || session.phase === 'posttest') {
+    const kind: QuizKind = session.phase === 'pretest' ? 'pre' : 'post'
+    const kagitlar = kind === 'pre' ? onTestKagitlari : sonTestKagitlari
+    const soruSayisi = session.activeQuiz?.questions.length ?? 0
+    const gonderenler = new Set(kagitlar.map((a) => a.participantId))
+    const bekleyenler = participants.filter((p) => !gonderenler.has(p.id))
+    const notlanan = kagitlar.filter((a) => a.percent !== undefined)
+    const ortalama = notlanan.length
+      ? Math.round(notlanan.reduce((t, a) => t + (a.percent ?? 0), 0) / notlanan.length)
+      : null
+
+    return (
+      <div className="mx-auto max-w-6xl px-5 py-10 sm:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="label">{kind === 'pre' ? 'ÖN TEST · DERSTEN ÖNCE' : 'SON TEST · DERSTEN SONRA'}</p>
+            <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
+              {session.lessonTitle}
+            </h1>
+          </div>
+          <div className="text-right">
+            <p className="font-display text-4xl font-bold text-ink">
+              {kagitlar.length}
+              <span className="text-ink-faint">/{participants.length}</span>
+            </p>
+            <p className="label mt-1">GÖNDEREN</p>
+          </div>
+        </div>
+        <div className="rule mt-7" />
+
+        <div className="mt-6 grid gap-6 lg:grid-cols-[380px_1fr]">
+          <div className="space-y-6">
+            <div className="file-card p-7 text-center">
+              <p className="label">KATILIM KODU</p>
+              <p className="mt-3 font-mono text-5xl font-bold tracking-[0.18em] text-ink">
+                {session.code}
+              </p>
+              <p className="mt-4 text-sm leading-relaxed text-ink-muted">
+                Geç kalanlar hâlâ katılıp testi çözebilir.
+              </p>
+            </div>
+
+            <div className="file-card grid grid-cols-3 gap-px overflow-hidden bg-paper-edge">
+              <div className="bg-paper-card p-4 text-center">
+                <p className="font-display text-2xl font-bold text-ink">{soruSayisi}</p>
+                <p className="label mt-0.5">SORU</p>
+              </div>
+              <div className="bg-paper-card p-4 text-center">
+                <p className="font-display text-2xl font-bold text-flag">{bekleyenler.length}</p>
+                <p className="label mt-0.5">BEKLENEN</p>
+              </div>
+              <div className="bg-paper-card p-4 text-center">
+                <p className="font-display text-2xl font-bold text-verify">
+                  {ortalama === null ? '—' : `%${ortalama}`}
+                </p>
+                <p className="label mt-0.5">ORTALAMA</p>
+              </div>
+            </div>
+
+            <div className="file-card p-6">
+              <p className="text-sm leading-relaxed text-ink-muted">
+                {kind === 'pre'
+                  ? 'Test kapanınca lobiye dönersin; oradan dersi başlatırsın.'
+                  : 'Test kapanınca ders biter ve rapor açılır.'}
+              </p>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Button3D size="lg" tone={kind === 'pre' ? 'primary' : 'danger'} onClick={testiBitir}>
+                  {kind === 'pre' ? 'Ön Testi Bitir' : 'Son Testi Bitir · Dersi Kapat'}
+                </Button3D>
+              </div>
+            </div>
+          </div>
+
+          {/* Kim gönderdi, kim bekliyor */}
+          <div className="file-card p-6">
+            <p className="label font-bold">TEST KAĞITLARI</p>
+            <div className="rule my-4" />
+            {kagitlar.length === 0 ? (
+              <p className="py-10 text-center text-sm text-ink-muted">
+                Henüz kimse göndermedi — öğrenciler çözüyor.
+              </p>
+            ) : (
+              <div className="max-h-[420px] space-y-1.5 overflow-y-auto">
+                <AnimatePresence initial={false}>
+                  {[...kagitlar]
+                    .sort((a, b) => b.submittedAt - a.submittedAt)
+                    .map((a) => (
+                      <motion.div
+                        key={a.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="flex items-center gap-3 rounded-sm bg-paper-deep px-3 py-2"
+                      >
+                        <div className="grid h-8 w-8 shrink-0 place-items-center rounded-sm border border-paper-edge bg-paper-card font-mono text-[10px] font-bold text-ink">
+                          {initials(a.participantName)}
+                        </div>
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">
+                          {a.participantName}
+                        </span>
+                        <span className="font-mono text-[11px] text-ink-muted">
+                          {a.correctCount ?? '—'}/{a.total ?? soruSayisi}
+                        </span>
+                        <span className="w-14 text-right font-display font-bold text-ink">
+                          {a.percent === undefined ? '…' : `%${a.percent}`}
+                        </span>
+                      </motion.div>
+                    ))}
+                </AnimatePresence>
+              </div>
+            )}
+
+            {bekleyenler.length > 0 && (
+              <>
+                <div className="rule my-4" />
+                <p className="label font-bold text-flag">BEKLENENLER ({bekleyenler.length})</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {bekleyenler.map((p) => (
+                    <span key={p.id} className="label-chip border-paper-edge bg-paper-deep">
+                      {p.name}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     )
@@ -509,6 +867,8 @@ export default function AmfiHostV2() {
             ))}
           </div>
         </div>
+
+        <QuizComparison participants={participants} quizAnswers={quizAnswers} />
 
         <RatingSummary ratings={ratings} />
 

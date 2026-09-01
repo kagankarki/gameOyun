@@ -23,6 +23,19 @@ const live = () => Boolean(isFirebaseConfigured && firestore && firebaseAuth)
    KİMLİK DOĞRULAMA
    ══════════════════════════════════════════════════════════ */
 
+/**
+ * Cihazda duran oturumu kapatır. Amfiye katılan öğrenci için açılan ANONİM
+ * oturum, sonradan gerçek hesapla giriş yapmayı engelleyebiliyordu.
+ */
+async function clearFirebaseSession() {
+  if (!live() || !firebaseAuth?.currentUser) return
+  try {
+    await fbSignOut(firebaseAuth)
+  } catch (e) {
+    console.error('[auth] önceki oturum kapatılamadı', e)
+  }
+}
+
 export async function signUp(
   name: string,
   email: string,
@@ -30,6 +43,9 @@ export async function signUp(
   role: Role,
 ): Promise<AppUser> {
   if (live()) {
+    // Amfiye katılan öğrenci anonim oturum açıyor. Üzerine kayıt olunurken
+    // o oturum kapanmazsa Firebase bazı durumlarda eski kimliği tutuyor.
+    await clearFirebaseSession()
     const cred = await createUserWithEmailAndPassword(firebaseAuth!, email, password)
     await updateProfile(cred.user, { displayName: name })
     const user: AppUser = {
@@ -60,6 +76,7 @@ export async function signUp(
 
 export async function signIn(email: string, password: string): Promise<AppUser> {
   if (live()) {
+    await clearFirebaseSession()
     const cred = await signInWithEmailAndPassword(firebaseAuth!, email, password)
     const snap = await getDoc(doc(firestore!, 'users', cred.user.uid))
     if (snap.exists()) return snap.data() as AppUser
@@ -85,6 +102,9 @@ export async function signIn(email: string, password: string): Promise<AppUser> 
 }
 
 export async function signOutUser() {
+  // Cihazdaki amfi katılımı da düşsün — çıkış yapan kişinin oyunu,
+  // aynı telefondan giren bir sonraki kişiye miras kalmasın.
+  store.setMyJoin(null)
   if (live()) return fbSignOut(firebaseAuth!)
   store.setSession(null)
 }
@@ -94,6 +114,12 @@ export function watchAuth(cb: (u: AppUser | null) => void): () => void {
   if (live()) {
     return onAuthStateChanged(firebaseAuth!, async (fbUser) => {
       if (!fbUser) return cb(null)
+      /**
+       * Anonim oturum yalnızca amfiye katılan hesapsız öğrenci için açılıyor;
+       * bu bir uygulama hesabı DEĞİL. Kullanıcı sayarsak Navbar "Çıkış"
+       * gösterip giriş yolunu kapatıyor, cihaz bir daha login olamıyordu.
+       */
+      if (fbUser.isAnonymous) return cb(null)
       try {
         const snap = await getDoc(doc(firestore!, 'users', fbUser.uid))
         cb(

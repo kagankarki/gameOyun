@@ -8,9 +8,10 @@ export default defineConfig({
     alias: { '@': path.resolve(__dirname, './src') },
   },
   server: {
-    host: true, // Yerel ağdaki tüm cihazlardan (telefonlar vs.) erişime açar
-    // PORT verilmişse ona uy (araçlar 5173 doluyken başka port atayabiliyor)
+    host: '0.0.0.0', // Yerel ağdaki tüm cihazlardan (telefonlar vs.) erişime açar
     port: Number(process.env.PORT) || 5173,
+    strictPort: true,
+    cors: true,
     open: true,
   },
 })

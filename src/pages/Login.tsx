@@ -15,7 +15,7 @@ export default function Login() {
   const [params] = useSearchParams()
   const nav = useNavigate()
   const toast = useToast()
-  const { signIn, signUp } = useAuth()
+  const { user, signIn, signUp, signOut } = useAuth()
 
   const [mode, setMode] = useState<'in' | 'up'>('in')
   const [role, setRole] = useState<Role>(params.get('rol') === 'teacher' ? 'teacher' : 'student')
@@ -24,6 +24,25 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
+
+  /**
+   * Cihazda açık bir oturum varsa bunu açıkça söyle. Aksi hâlde telefonu
+   * devralan kişi (ör. hoca) formu doldurup gönderiyor, ama ne olduğunu
+   * anlamıyordu — "bir kere giriş yapılan cihaz bir daha giriş yapamıyor"
+   * şikâyetinin kaynağı buydu.
+   */
+  const cikisYap = async () => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await signOut()
+      setEmail('')
+      setPassword('')
+      toast('Çıkış yapıldı. Şimdi başka hesapla girebilirsin.', 'success')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -86,6 +105,29 @@ export default function Login() {
               </h1>
               <p className="mt-1.5 text-sm text-ink-muted">Hatayı Yakala platformu</p>
             </div>
+
+            {user && (
+              <div className="mb-6 rounded-sm border-l-2 border-flag bg-flag-soft p-4 text-[13px] leading-relaxed text-ink">
+                <p>
+                  Bu cihazda{' '}
+                  <strong className="font-semibold">{user.name}</strong> (
+                  {user.role === 'teacher' ? 'öğretim üyesi' : 'öğrenci'}) olarak giriş yapılmış.
+                  Başka bir hesapla girmek için önce çıkış yap.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button3D
+                    size="sm"
+                    type="button"
+                    onClick={() => nav(user.role === 'teacher' ? '/hoca' : '/dersler')}
+                  >
+                    Panele dön
+                  </Button3D>
+                  <Button3D size="sm" tone="ghost" type="button" onClick={cikisYap} disabled={busy}>
+                    Çıkış yap
+                  </Button3D>
+                </div>
+              </div>
+            )}
 
             {/* Mod seçici — dosya sekmesi */}
             <div className="mb-7 flex border-b border-paper-edge">

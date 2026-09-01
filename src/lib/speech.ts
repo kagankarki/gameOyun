@@ -204,12 +204,18 @@ export interface SpeakHandle {
 
 let activeAudio: HTMLAudioElement | null = null
 let activeRafId: number | null = null
+/** Ses dosyası çalarken konumu bildiren zamanlayıcı */
+let activeTickId: ReturnType<typeof setInterval> | null = null
 
 /** Sayfadan ayrılırken veya yeni okuma başlarken sesi susturur */
 export const cancelSpeech = () => {
   if (activeRafId !== null) {
     cancelAnimationFrame(activeRafId)
     activeRafId = null
+  }
+  if (activeTickId !== null) {
+    clearInterval(activeTickId)
+    activeTickId = null
   }
   if (activeAudio) {
     activeAudio.pause()
@@ -219,6 +225,101 @@ export const cancelSpeech = () => {
   }
   if (isSpeechSynthesisSupported()) {
     speechSynthesis.cancel()
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   HOCANIN KENDİ SES KAYDI
+   ══════════════════════════════════════════════════════════ */
+
+/**
+ * Yüklenen ses dosyasını çalar ve metinde nerede olunduğunu bildirir.
+ *
+ * TTS'te kelime sınırlarını motor veriyor; ham bir ses dosyasında böyle
+ * bir bilgi yok. Bu yüzden konumu **orantısal** hesaplıyoruz: ses %40'ına
+ * geldiyse metnin de %40'ındayız sayıyoruz. Kayıt boyunca konuşma hızı
+ * kabaca sabit olduğu için amfide aradığımız hassasiyet (birkaç saniyelik
+ * yakalama penceresi) buna fazlasıyla yetiyor.
+ *
+ * `speak()` ile aynı `SpeakHandle`ı döndürür; hoca ekranı ikisini de
+ * aynı şekilde iptal edebilsin.
+ */
+export function playAudioFile(
+  blob: Blob,
+  textLength: number,
+  opts: SpeakOptions = {},
+): SpeakHandle {
+  cancelSpeech()
+
+  const state = { cancelled: false }
+  const url = URL.createObjectURL(blob)
+  const audio = new Audio(url)
+  audio.preload = 'auto'
+  if (opts.rate && opts.rate > 0) audio.playbackRate = opts.rate
+
+  activeAudio = audio
+
+  const temizle = () => {
+    if (activeTickId !== null) {
+      clearInterval(activeTickId)
+      activeTickId = null
+    }
+    URL.revokeObjectURL(url)
+  }
+
+  /**
+   * Konumu `requestAnimationFrame` ile DEĞİL, ses elemanının kendi
+   * saatiyle takip ediyoruz: rAF sekme arkaya düştüğü anda duruyor ve
+   * çizelge donuyor — hoca ekranı başka pencereye geçtiğinde bütün
+   * basışlar metnin durduğu yere denk geliyordu. `timeupdate` + kısa bir
+   * zamanlayıcı arka planda da işlemeye devam ediyor.
+   */
+  const takip = () => {
+    if (state.cancelled) return
+    const sure = audio.duration
+    if (!Number.isFinite(sure) || sure <= 0) return
+    const oran = Math.min(1, audio.currentTime / sure)
+    opts.onBoundary?.(Math.floor(oran * textLength))
+  }
+
+  audio.ontimeupdate = takip
+
+  audio.onplaying = () => {
+    if (state.cancelled) return
+    opts.onStart?.()
+    if (activeTickId === null) activeTickId = setInterval(takip, 250)
+  }
+
+  audio.onended = () => {
+    if (state.cancelled) return
+    temizle()
+    opts.onBoundary?.(textLength)
+    opts.onEnd?.()
+  }
+
+  audio.onerror = () => {
+    if (state.cancelled) return
+    temizle()
+    opts.onError?.('Ses dosyası çalınamadı. Dosya bozuk ya da desteklenmeyen bir biçimde olabilir.')
+  }
+
+  audio.play().catch((err: unknown) => {
+    if (state.cancelled) return
+    temizle()
+    // Tarayıcı otomatik oynatmayı engellediyse kullanıcı hareketi gerekiyor
+    opts.onError?.(
+      (err as Error)?.name === 'NotAllowedError'
+        ? 'Tarayıcı sesi engelledi — “Dersi Başlat” düğmesine sayfadan tıklayarak tekrar dene.'
+        : `Ses başlatılamadı: ${(err as Error)?.message ?? 'bilinmeyen hata'}`,
+    )
+  })
+
+  return {
+    cancel: () => {
+      state.cancelled = true
+      temizle()
+      cancelSpeech()
+    },
   }
 }
 

@@ -2,6 +2,13 @@
 
 **Gazi Üniversitesi × Prof. Dr. Tuncay Peker** — interaktif ders platformu.
 
+> **Çalışmanın başlığı:** Nöroanatomi Eğitiminde Kasıtlı Hata Tespiti: Yapay Zekâ
+> Asistanı Destekli Öğretimin Öğrenme, Bilgi Kalıcılığı ve Anatomik Hata
+> Farkındalığı Üzerine Etkisinin Kontrollü Olarak Değerlendirilmesi
+>
+> Başlık tek bir yerde tanımlı: `src/lib/survey.ts` → `CALISMA_BASLIGI`.
+> Anket formu, oturum raporu ve Excel çıktısı oradan besleniyor.
+
 Hoca derste bilinçli olarak yanlış bilgiler verir; öğrenci hatayı fark ettiği anda
 telefonundan **“HATA VAR”**a basıp ne olduğunu yazar. Doğru yakalarsa puan alır,
 boşa basarsa ceza yer.
@@ -30,7 +37,8 @@ Tarayıcı otomatik açılır → `http://localhost:5173`
 
 1. `npm run dev`
 2. **Kayıt Ol → Öğretim Üyesi** seç, kod olarak `gazi2026` gir.
-3. Ders kartındaki **Amfi 2.0** → notu yapıştır → yanlış yerleri seçip işaretle → **Oturumu Aç**.
+3. Ders kartındaki **Amfi 2.0** → notu yapıştır → yanlış yerleri seçip işaretle →
+   (istersen ön/son test sorularını yükle) → **Oturumu Aç**.
 4. Çıkan **katılım kodunu** başka bir sekmede (ya da telefondan QR ile) `/amfi` adresine gir.
 5. Hoca ekranında **Dersi Başlat** — metin sesli okunmaya başlar.
 
@@ -100,6 +108,84 @@ büyük butona basar. Puan, tepki hızına göre hesaplanır.
 7. Ders bitince öğrenciler dersi **5 yıldız** üzerinden değerlendirir; hoca ortalamayı
    ve yorumları oturum raporunda görür.
 
+### Ses Kaydıyla Ders Anlatma
+
+Hazırlık ekranındaki **DERS SES KAYDI** bölümüne bir ses dosyası (MP3 · M4A ·
+WAV · OGG) yüklersen ders yapay zekâ sesiyle değil **o kayıtla** anlatılır.
+Yükledikten sonra **kaydın metnini not alanına yapıştırman** gerekiyor: öğrenci
+“HATA VAR”a bastığında hangi hataya denk geldiği, kaydın o andaki ilerlemesinden
+hesaplanıyor (ses %40'ındaysa metnin de %40'ındayız).
+
+Dosya **hocanın cihazında**, tarayıcının IndexedDB'sinde saklanır — Firestore'a
+gitmez. Sebebi basit: ses dosyaları 1 MB'lık doküman sınırına sığmaz ve sesi
+zaten yalnızca hoca bilgisayarı çalıyor, öğrencinin telefonuna hiç gitmiyor.
+Bunun bedeli: **dersi aynı tarayıcıdan açman gerekir.** Başka bir cihazdan
+açarsan host ekranı uyarır ve dosyayı yeniden seçme imkânı verir.
+
+### Metinde Arama
+
+Hem ders düzenleyicide hem amfi hazırlık ekranında **METİNDE ARA** kutusu var.
+Uzun notu satır satır okumak yerine ifadeyi yazıp sonuca tıklarsın; o aralık
+metinde seçili hâle gelir ve işaretleme formu açılır. Zaten işaretli yerler
+`İŞARETLİ` etiketiyle görünür.
+
+### Hata İşaretleme
+
+**İstediğin kadar tuzak ekleyebilirsin** — sayı sınırı yok. Üç şey buna engel
+oluyordu, üçü de düzeltildi:
+
+- İşaretler metin düzenlendiğinde kayboluyordu. Artık yazı kaydıysa işaret kendi
+  metnini yeni konumunda bulup oraya taşınıyor; gerçekten silinenler de sessizce
+  düşmek yerine ekranda bildiriliyor.
+- İşaretleme düğmesi sebebini söylemeden kapanıyordu. Artık neden basılamadığı
+  düğmenin altında yazıyor; seçim mevcut bir tuzakla çakışıyorsa **Çakışan Tuzağı
+  Sil** düğmesi çıkıyor.
+- 5 şıklı soru zorunlu görünüyordu. **İsteğe bağlı**: bölüm varsayılan olarak
+  kapalı, tuzak soru olmadan da eklenir. Soru istersen *Soru Ekle* ile açılır.
+
+Arama sonuçlarındaki **TUZAK YAP** düğmesiyle, metinde fareyle cümle avlamadan
+doğrudan tuzak kurabilirsin — eşleşmenin geçtiği cümlenin tamamı seçilir.
+
+### Ön Test → Ders → Son Test
+
+Hazırlık ekranında **iki soru yükleme bölümü** var: `ÖN TEST · DERSTEN ÖNCE` ve
+`SON TEST · DERSTEN SONRA`. Ders akışı şu sıraya oturur:
+
+1. **Lobi** — öğrenciler koddan katılır.
+2. **Ön test** — hoca `Ön Testi Başlat` der; öğrencinin telefonunda oyun yerine
+   soru kâğıdı açılır. Kâğıtlar geldikçe hoca cihazı anında notlar.
+3. **Ders** — `Ön Testi Bitir` → lobi → `Dersi Başlat`. Normal hata yakalama oyunu.
+4. **Son test** — `Dersi Bitir` dendiğinde ders kapanmaz, **son test açılır**.
+   `Son Testi Bitir · Dersi Kapat` ile oturum biter.
+
+İki test de boş bırakılabilir; o zaman o adım hiç görünmez ve akış eskisi gibi işler.
+
+**Soru yükleme biçimi.** Word'den/soru bankasından kopyalanan metin doğrudan
+yapıştırılabilir ya da `.txt` / `.json` dosyası yüklenebilir:
+
+```
+1) Humerus hangi bölgenin kemiğidir?
+A) Ön kol
+B) Kol
+C) El bileği
+Cevap: B
+```
+
+Doğru şık `Cevap: B` satırıyla ya da şıkkın başına `*` konarak işaretlenir
+(`*B) Kol`). JSON biçimi de kabul edilir:
+`[{ "question": "...", "options": ["..."], "correctIndex": 1 }]`.
+Yüklenen her soru ekranda düzeltilebilir; yeşil harf doğru cevabı gösterir.
+
+**Cevaplar nerede duruyor?** Doğru şıklar hocaya özel `sessionSecrets`
+dokümanında kalır. Test açıldığında sorular öğrenci tarafına **doğru şıkları
+sökülmüş hâlde** yazılır, test kapanınca oturumdan silinir — konsolu açan
+öğrenci cevapları göremez. Puanlamayı hoca cihazı yapar.
+
+**Sonuç.** Hoca oturum raporunda ve `/hoca/sonuclar/...` ekranında
+`ön test % → son test % → kazanım` tablosunu görür; Excel raporuna
+`On Test - Son Test` sekmesi olarak da düşer. Öğrenci ders sonunda kendi
+ön/son test yüzdesini ve değişimini görür.
+
 **Mod seçimi:** *Sesli Okuma* (TTS okur) ya da *Sessiz Mod* (metin perdede durur,
 pencereyi hoca açıp kapatır).
 
@@ -166,7 +252,7 @@ src/
     ├── AmfiJoin.tsx          Koddan katılım (hesapsız) → v1/v2 ekranını seçer
     ├── AmfiHost.tsx          Amfi 1.0 hoca/projeksiyon (zil)
     ├── AmfiPlay.tsx          Amfi 1.0 öğrenci (zil)
-    ├── AmfiSetup.tsx         Amfi 2.0 hazırlık — not + yanlış işaretleme
+    ├── AmfiSetup.tsx         Amfi 2.0 hazırlık — not + yanlış + ön/son test yükleme
     ├── AmfiHostV2.tsx        Amfi 2.0 hoca/projeksiyon (TTS + canlı puanlama)
     └── AmfiPlayV2.tsx        Amfi 2.0 öğrenci (not yazma)
 ```

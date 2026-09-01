@@ -147,7 +147,8 @@ export default function App() {
         <div className="mx-auto flex max-w-7xl flex-col items-center justify-between gap-2 px-6 text-xs text-ink-muted sm:flex-row">
           <p>
             © 2026 Gazi Üniversitesi ·{' '}
-            <span className="font-semibold text-ink">Prof. Dr. Tuncay Peker</span> iş birliğiyle
+            <span className="font-semibold text-ink">Prof. Dr. Tuncay Peker</span> &amp;{' '}
+            <span className="font-semibold text-ink">Doç. Dr. Ayşe Soylu</span> iş birliğiyle
           </p>
           <p className="label font-medium text-ink">
             Kağan Karkı tarafından hazırlanmıştır

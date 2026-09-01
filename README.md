@@ -1,6 +1,6 @@
 # 🎯 Hatayı Yakala
 
-**Gazi Üniversitesi × Prof. Dr. Tuncay Peker** — interaktif ders platformu.
+**Gazi Üniversitesi × Prof. Dr. Tuncay Peker × Doç. Dr. Ayşe Soylu** — interaktif ders platformu.
 
 > **Çalışmanın başlığı:** Nöroanatomi Eğitiminde Kasıtlı Hata Tespiti: Yapay Zekâ
 > Asistanı Destekli Öğretimin Öğrenme, Bilgi Kalıcılığı ve Anatomik Hata

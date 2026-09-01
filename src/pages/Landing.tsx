@@ -138,7 +138,7 @@ export default function Landing() {
           <motion.div {...fade(0)} className="flex justify-center">
             <span className="label-chip border-paper-edge bg-paper-card">
               <span className="h-1.5 w-1.5 rounded-full bg-mark" />
-              GAZİ ÜNİVERSİTESİ × PROF. DR. TUNCAY PEKER
+              GAZİ ÜNİVERSİTESİ × PROF. DR. TUNCAY PEKER × DOÇ. DR. AYŞE SOYLU
             </span>
           </motion.div>
 
@@ -466,7 +466,7 @@ export default function Landing() {
             className="flex flex-col items-center gap-6"
           >
             <span className="label-chip border-verify-edge bg-verify-soft text-verify text-xs sm:text-sm px-4 py-1.5 font-bold tracking-widest uppercase">
-              GAZİ ÜNİVERSİTESİ × PROF. DR. TUNCAY PEKER × KAĞAN KARKI
+              GAZİ ÜNİVERSİTESİ × PROF. DR. TUNCAY PEKER × DOÇ. DR. AYŞE SOYLU × KAĞAN KARKI
             </span>
             <h2 className="font-display text-6xl sm:text-8xl md:text-9xl font-extrabold text-white tracking-tight drop-shadow-2xl">
               BAŞARILAR

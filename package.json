@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Gazi Üniversitesi x Prof. Tuncay Peker - Hatayı Yakala interaktif ders platformu",
+  "description": "Gazi Üniversitesi x Prof. Dr. Tuncay Peker x Doç. Dr. Ayşe Soylu - Hatayı Yakala interaktif ders platformu",
   "scripts": {
     "dev": "vite --host",
     "tunnel": "npx localtunnel --port 5173",

@@ -29,7 +29,7 @@ const HeroDemo = () => {
             // 149'u öğrenci, hoca yalnızca kendi bağlantısını arıyor.
             tertiaryButtonText={user ? '' : 'Öğretim üyesi misin? Hoca girişi →'}
             tertiaryButtonHref="/giris?rol=teacher"
-            partnersTitle="Gazi Üniversitesi × Tuncay Peker × Kağan Karkı"
+            partnersTitle="Gazi Üniversitesi × Prof. Dr. Tuncay Peker × Doç. Dr. Ayşe Soylu × Kağan Karkı"
             partners={[]}
         />
     );

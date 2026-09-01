@@ -579,7 +579,7 @@ export function exportSessionToExcel(data: ExportData) {
  xmlns:html="http://www.w3.org/TR/REC-html40">
   <DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">
     <Title>${xmlEscape(CALISMA_BASLIGI)}</Title>
-    <Author>Prof. Dr. Tuncay Peker - Gazi Üniversitesi</Author>
+    <Author>Prof. Dr. Tuncay Peker &amp; Doç. Dr. Ayşe Soylu - Gazi Üniversitesi</Author>
     <Created>${new Date().toISOString()}</Created>
   </DocumentProperties>
   <Styles>

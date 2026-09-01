@@ -52,6 +52,88 @@ import { EASE } from '@/lib/motion'
 const GORUNEN_ONCE = 260
 const GORUNEN_SONRA = 420
 
+function PhaseStepper({
+  currentPhase,
+  hasPretest,
+  hasPosttest,
+}: {
+  currentPhase: string
+  hasPretest: boolean
+  hasPosttest: boolean
+}) {
+  const steps = [
+    { key: 'lobby', title: '1. Lobi', desc: 'Katılım & QR' },
+    ...(hasPretest ? [{ key: 'pretest', title: '2. Ön Test', desc: 'Pre-Test' }] : []),
+    {
+      key: 'live',
+      title: hasPretest ? '3. Hatayı Yakala' : '2. Hatayı Yakala',
+      desc: 'Canlı Sesli Ders',
+    },
+    ...(hasPosttest
+      ? [
+          {
+            key: 'posttest',
+            title: hasPretest ? '4. Son Test' : '3. Son Test',
+            desc: 'Post-Test',
+          },
+        ]
+      : []),
+    {
+      key: 'ended',
+      title:
+        (hasPretest && hasPosttest ? '5. ' : hasPretest || hasPosttest ? '4. ' : '3. ') + 'Sonuçlar',
+      desc: 'Gelişim Analizi',
+    },
+  ]
+
+  const isLivePhase = ['speaking', 'grace', 'reveal'].includes(currentPhase)
+  const activeKey = isLivePhase ? 'live' : currentPhase
+
+  return (
+    <div className="mb-8 flex items-center justify-between gap-2 overflow-x-auto rounded-sm border border-paper-edge bg-paper-deep p-2">
+      {steps.map((st, i) => {
+        const isActive = activeKey === st.key
+        const isPassed =
+          (st.key === 'lobby' && activeKey !== 'lobby') ||
+          (st.key === 'pretest' && activeKey !== 'lobby' && activeKey !== 'pretest') ||
+          (st.key === 'live' && (activeKey === 'posttest' || activeKey === 'ended')) ||
+          (st.key === 'posttest' && activeKey === 'ended')
+
+        return (
+          <div
+            key={st.key}
+            className={cx(
+              'flex flex-1 min-w-[130px] items-center gap-2 rounded-sm px-3 py-2 text-xs transition-all',
+              isActive
+                ? 'bg-paper-card text-ink shadow-paper border border-paper-edge font-bold'
+                : isPassed
+                  ? 'text-verify bg-verify-soft/40 font-semibold'
+                  : 'text-ink-muted',
+            )}
+          >
+            <span
+              className={cx(
+                'grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-bold font-mono',
+                isActive
+                  ? 'bg-ink text-paper'
+                  : isPassed
+                    ? 'bg-verify text-white'
+                    : 'bg-paper-edge text-ink-muted',
+              )}
+            >
+              {isPassed ? '✓' : i + 1}
+            </span>
+            <div className="truncate">
+              <p className="truncate font-semibold">{st.title}</p>
+              <p className="text-[10px] text-ink-faint truncate">{st.desc}</p>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function AmfiHostV2() {
   const { lessonId } = useParams()
   const [searchParams] = useSearchParams()
@@ -422,6 +504,28 @@ export default function AmfiHostV2() {
     await ses.endQuiz(s, kind === 'pre' ? 'lobby' : 'ended')
   }
 
+  /**
+   * Ön testi bitirip doğrudan kesintisiz canlı sesli derse geçer.
+   */
+  const onTestiBitirVeDerseGec = async () => {
+    const s = sessionRef.current
+    if (!s?.activeQuiz) return
+    const bekleyen = partsRef.current.length - quizAnswers.filter((a) => a.kind === 'pre').length
+    if (
+      bekleyen > 0 &&
+      !window.confirm(
+        `${bekleyen} öğrenci henüz cevaplamadı. Ön testi bitirip Canlı Derse (Hatayı Yakala) geçilsin mi?`,
+      )
+    )
+      return
+    await queue.current
+    await ses.endQuiz(s, 'lobby')
+    toast('Ön test tamamlandı. Canlı ders başlatılıyor…', 'success')
+    setTimeout(() => {
+      basla()
+    }, 600)
+  }
+
   const bitir = async () => {
     const s = sessionRef.current
     if (!s) return
@@ -509,9 +613,15 @@ export default function AmfiHostV2() {
   if (session.phase === 'lobby') {
     return (
       <div className="mx-auto max-w-6xl px-5 py-10 sm:px-6">
+        <PhaseStepper
+          currentPhase="lobby"
+          hasPretest={onTestSorulari.length > 0}
+          hasPosttest={sonTestSorulari.length > 0}
+        />
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="label">AMFİ OTURUMU · KESİNTİSİZ OKUMA</p>
+            <p className="label">AMFİ OTURUMU · 1. AŞAMA (LOBİ)</p>
             <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
               {session.lessonTitle}
             </h1>
@@ -597,27 +707,27 @@ export default function AmfiHostV2() {
             {/* Ölçme testleri — akış: ön test → ders → son test */}
             {(onTestSorulari.length > 0 || sonTestSorulari.length > 0) && (
               <div className="mt-5 rounded-sm border border-paper-edge bg-paper-deep p-4">
-                <p className="label font-bold">ÖLÇME TESTLERİ</p>
+                <p className="label font-bold">ÖLÇME TESTLERİ DURUMU</p>
                 <div className="mt-3 space-y-2 text-sm text-ink">
                   <div className="flex items-center justify-between gap-3">
-                    <span>Ön test · {onTestSorulari.length} soru</span>
+                    <span>1. Ön test · {onTestSorulari.length} soru</span>
                     <span
                       className={cx(
                         'font-mono text-[11px] font-bold uppercase tracking-[0.14em]',
-                        onTestBitti ? 'text-verify' : 'text-ink-muted',
+                        onTestBitti ? 'text-verify' : 'text-flag',
                       )}
                     >
                       {onTestSorulari.length === 0
                         ? 'YOK'
                         : onTestBitti
-                          ? `✓ ${onTestKagitlari.length} KAĞIT`
+                          ? `✓ ${onTestKagitlari.length} ÖĞRENCİ TAMAMLADI`
                           : 'BEKLİYOR'}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span>Son test · {sonTestSorulari.length} soru</span>
+                    <span>2. Son test · {sonTestSorulari.length} soru</span>
                     <span className="font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-ink-muted">
-                      {sonTestSorulari.length === 0 ? 'YOK' : 'DERS SONUNDA'}
+                      {sonTestSorulari.length === 0 ? 'YOK' : 'CANLI DERS BİTİMİNDE'}
                     </span>
                   </div>
                 </div>
@@ -662,24 +772,37 @@ export default function AmfiHostV2() {
             />
 
             <div className="mt-auto flex flex-wrap gap-3 pt-8">
-              {onTestSorulari.length > 0 && !onTestBitti && (
+              {onTestSorulari.length > 0 && !onTestBitti ? (
+                <>
+                  <Button3D
+                    size="lg"
+                    tone="gold"
+                    onClick={() => testiBaslat('pre')}
+                    disabled={!participants.length}
+                  >
+                    📝 1. Aşama: Ön Testi Başlat
+                  </Button3D>
+                  <Button3D
+                    size="lg"
+                    tone="ghost"
+                    onClick={basla}
+                    disabled={session.audio ? !sesKaydi || !script : !!voiceError || !script}
+                  >
+                    🎙️ Ön Testi Atla · Dersi Başlat
+                  </Button3D>
+                </>
+              ) : (
                 <Button3D
                   size="lg"
-                  onClick={() => testiBaslat('pre')}
-                  disabled={!participants.length}
+                  tone="success"
+                  onClick={basla}
+                  disabled={session.audio ? !sesKaydi || !script : !!voiceError || !script}
                 >
-                  Ön Testi Başlat
+                  {onTestBitti
+                    ? '🎙️ 2. Aşama: Canlı Dersi Başlat (Hatayı Yakala)'
+                    : '🎙️ Canlı Dersi Başlat'}
                 </Button3D>
               )}
-              <Button3D
-                size="lg"
-                tone={onTestSorulari.length > 0 && !onTestBitti ? 'ghost' : 'primary'}
-                onClick={basla}
-                /* Ses kaydıyla anlatılacaksa TTS'in çalışması gerekmiyor */
-                disabled={session.audio ? !sesKaydi || !script : !!voiceError || !script}
-              >
-                {onTestSorulari.length > 0 && !onTestBitti ? 'Ön Testi Atla · Dersi Başlat' : 'Dersi Başlat'}
-              </Button3D>
               <Button3D size="lg" tone="ghost" onClick={() => nav('/hoca')}>
                 Vazgeç
               </Button3D>
@@ -711,9 +834,17 @@ export default function AmfiHostV2() {
 
     return (
       <div className="mx-auto max-w-6xl px-5 py-10 sm:px-6">
+        <PhaseStepper
+          currentPhase={session.phase}
+          hasPretest={onTestSorulari.length > 0}
+          hasPosttest={sonTestSorulari.length > 0}
+        />
+
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="label">{kind === 'pre' ? 'ÖN TEST · DERSTEN ÖNCE' : 'SON TEST · DERSTEN SONRA'}</p>
+            <p className="label">
+              {kind === 'pre' ? '2. AŞAMA: ÖN TEST (DERSTEN ÖNCE)' : '4. AŞAMA: SON TEST (DERSTEN SONRA)'}
+            </p>
             <h1 className="mt-2 font-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
               {session.lessonTitle}
             </h1>
@@ -736,7 +867,7 @@ export default function AmfiHostV2() {
                 {session.code}
               </p>
               <p className="mt-4 text-sm leading-relaxed text-ink-muted">
-                Geç kalanlar hâlâ katılıp testi çözebilir.
+                Geç kalanlar katılıp testi çözebilir.
               </p>
             </div>
 
@@ -760,13 +891,24 @@ export default function AmfiHostV2() {
             <div className="file-card p-6">
               <p className="text-sm leading-relaxed text-ink-muted">
                 {kind === 'pre'
-                  ? 'Test kapanınca lobiye dönersin; oradan dersi başlatırsın.'
-                  : 'Test kapanınca ders biter ve rapor açılır.'}
+                  ? 'Öğrenciler ön testi bitirdiğinde doğrudan Canlı Derse (Hatayı Yakala) geçebilirsiniz.'
+                  : 'Son test tamamlandığında oturum kapanır ve gelişim karşılaştırma raporu açılır.'}
               </p>
               <div className="mt-5 flex flex-wrap gap-3">
-                <Button3D size="lg" tone={kind === 'pre' ? 'primary' : 'danger'} onClick={testiBitir}>
-                  {kind === 'pre' ? 'Ön Testi Bitir' : 'Son Testi Bitir · Dersi Kapat'}
-                </Button3D>
+                {kind === 'pre' ? (
+                  <>
+                    <Button3D size="lg" tone="gold" onClick={onTestiBitirVeDerseGec}>
+                      🎙️ Ön Testi Bitir & Canlı Derse Geç
+                    </Button3D>
+                    <Button3D size="lg" tone="ghost" onClick={testiBitir}>
+                      Lobiye Dön
+                    </Button3D>
+                  </>
+                ) : (
+                  <Button3D size="lg" tone="success" onClick={testiBitir}>
+                    🏆 Son Testi Bitir & Sonuçları Aç
+                  </Button3D>
+                )}
               </div>
             </div>
           </div>
@@ -832,14 +974,20 @@ export default function AmfiHostV2() {
   if (session.phase === 'ended') {
     const reportLessonId = lessonId || session.lessonId || lesson?.id
     return (
-      <div className="mx-auto max-w-3xl space-y-8 px-5 py-12 sm:px-6">
+      <div className="mx-auto max-w-4xl space-y-8 px-5 py-12 sm:px-6">
+        <PhaseStepper
+          currentPhase="ended"
+          hasPretest={onTestSorulari.length > 0}
+          hasPosttest={sonTestSorulari.length > 0}
+        />
+
         <div className="file-card overflow-hidden">
           <div className="flex items-center gap-3 border-b border-paper-edge bg-paper-deep px-6 py-3">
             <span className="label">OTURUM RAPORU</span>
             <span className="label ml-auto">{session.code}</span>
           </div>
           <div className="p-8 text-center">
-            <span className="stamp-verify animate-stamp">DERS BİTTİ</span>
+            <span className="stamp-verify animate-stamp">DERS TAMAMLANDI</span>
             <h1 className="mt-6 font-display text-3xl font-bold text-ink">
               {session.lessonTitle}
             </h1>
@@ -861,13 +1009,14 @@ export default function AmfiHostV2() {
                 <span className="font-mono text-sm text-verify">{p.hits} yakaladı</span>
                 <span className="font-mono text-sm text-mark">{p.falseAlarms} boş</span>
                 <span className="w-16 text-right font-display text-lg font-bold text-ink">
-                  {p.score}
+                  {p.score} puan
                 </span>
               </div>
             ))}
           </div>
         </div>
 
+        {/* Ön Test vs Son Test Karşılaştırmalı Gelişim Tablosu */}
         <QuizComparison participants={participants} quizAnswers={quizAnswers} />
 
         <RatingSummary ratings={ratings} />
@@ -875,7 +1024,7 @@ export default function AmfiHostV2() {
         <div className="flex flex-wrap justify-center gap-3">
           {reportLessonId ? (
             <Button3D onClick={() => nav(`/hoca/sonuclar/${reportLessonId}`)}>
-              Ayrıntılı Rapor
+              📊 Ayrıntılı Sonuçlar & Excel İndir
             </Button3D>
           ) : null}
           <Button3D tone="ghost" onClick={() => nav('/hoca')}>
@@ -898,6 +1047,12 @@ export default function AmfiHostV2() {
 
   return (
     <div className="mx-auto max-w-7xl px-5 py-8 sm:px-6">
+      <PhaseStepper
+        currentPhase={session.phase}
+        hasPretest={onTestSorulari.length > 0}
+        hasPosttest={sonTestSorulari.length > 0}
+      />
+
       {/* Künye */}
       <div className="file-card mb-5 flex flex-wrap items-center gap-x-6 gap-y-2 px-5 py-3">
         <div className="min-w-0">

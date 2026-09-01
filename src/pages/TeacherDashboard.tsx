@@ -116,11 +116,11 @@ export default function TeacherDashboard() {
       {/* Künye şeridi */}
       <div className="mb-12 grid grid-cols-2 gap-px overflow-hidden rounded-sm border border-paper-edge bg-paper-edge lg:grid-cols-5">
         {[
-          { l: 'DERS', v: stats.lessons },
+          { l: 'TOPLAM DERS', v: stats.lessons },
           { l: 'YAYINDA', v: stats.live },
-          { l: 'TUZAK', v: stats.traps },
-          { l: 'ÖĞRENCİ', v: stats.students },
-          { l: 'YAKALAMA', v: `%${stats.rate}` },
+          { l: 'GİZLİ HATA (TUZAK)', v: stats.traps },
+          { l: 'KATILAN ÖĞRENCİ', v: stats.students },
+          { l: 'YAKALAMA BAŞARISI', v: `%${stats.rate}` },
         ].map((s, i) => (
           <motion.div
             key={s.l}
@@ -130,7 +130,7 @@ export default function TeacherDashboard() {
             className="bg-paper-card p-5"
           >
             <p className="font-display text-3xl font-bold text-ink">{s.v}</p>
-            <p className="label mt-1">{s.l}</p>
+            <p className="label mt-1 text-[11px] font-semibold">{s.l}</p>
           </motion.div>
         ))}
       </div>
@@ -138,14 +138,14 @@ export default function TeacherDashboard() {
       {/* Ders listesi */}
       {mine.length === 0 ? (
         <div className="file-card grid place-items-center p-16 text-center">
-          <p className="label">DOSYA YOK</p>
-          <h3 className="mt-4 font-display text-xl font-bold text-ink">Henüz ders yok</h3>
+          <p className="label">DERS BULUNAMADI</p>
+          <h3 className="mt-4 font-display text-xl font-bold text-ink">Henüz kayıtlı dersiniz yok</h3>
           <p className="mt-2 max-w-md text-sm text-ink-muted">
-            İlk dersini oluştur, notunu bölüm bölüm gir ve hangi cümlelerin yanlış olduğunu
-            işaretle.
+            Yeni bir ders oluşturun, ders metnini cümle cümle ekleyin ve öğrencilerin bulması gereken
+            hatalı cümleleri (tuzakları) işaretleyin.
           </p>
           <div className="mt-7">
-            <Button3D onClick={createLesson}>İlk Dersini Oluştur</Button3D>
+            <Button3D onClick={createLesson}>İlk Dersi Oluştur</Button3D>
           </div>
         </div>
       ) : (
@@ -180,7 +180,7 @@ export default function TeacherDashboard() {
                             : 'border-paper-edge bg-paper-deep text-ink-muted',
                         )}
                       >
-                        {l.isLive ? 'YAYINDA' : 'TASLAK'}
+                        {l.isLive ? 'ÖĞRENCİLERE AÇIK (YAYINDA)' : 'TASLAK'}
                       </span>
                     </div>
 
@@ -191,76 +191,96 @@ export default function TeacherDashboard() {
                       {l.description}
                     </p>
 
+                    {/* Sayaçlar / İstatistik Kutusu */}
                     <div className="my-5 grid grid-cols-3 gap-px overflow-hidden rounded-sm border border-paper-edge bg-paper-edge text-center">
-                      {(
-                        [
-                          ['BÖLÜM', l.blocks.length],
-                          ['TUZAK', traps],
-                          ['OTURUM', plays],
-                        ] as const
-                      ).map(([k, v]) => (
-                        <div key={k} className="bg-paper-card p-3">
-                          <p className="font-display text-lg font-bold text-ink">{v}</p>
-                          <p className="label mt-0.5">{k}</p>
+                      {[
+                        { label: 'PARAGRAF', val: l.blocks.length, hint: 'Toplam metin parçası' },
+                        { label: 'GİZLİ HATA', val: traps, hint: 'Öğrencinin bulacağı tuzaklar' },
+                        { label: 'OYNANMA', val: plays, hint: 'Açılan toplam canlı oturum' },
+                      ].map((item) => (
+                        <div key={item.label} className="bg-paper-card p-3" title={item.hint}>
+                          <p className="font-display text-lg font-bold text-ink">{item.val}</p>
+                          <p className="label mt-0.5 text-[10px] tracking-wider">{item.label}</p>
                         </div>
                       ))}
                     </div>
 
                     <p className="mb-4 font-mono text-[11px] text-ink-faint">
-                      Güncelleme: {fmtDate(l.updatedAt)}
+                      Son Güncelleme: {fmtDate(l.updatedAt)}
                     </p>
 
-                    <div className="mt-auto flex flex-wrap items-center gap-2">
-                      <Button3D
-                        size="sm"
-                        tone="gold"
-                        onClick={() => nav(`/hoca/amfi-setup/${l.id}`)}
-                        disabled={traps === 0}
-                        title={
-                          traps === 0
-                            ? 'Önce en az bir hatalı bölüm işaretle'
-                            : 'Kesintisiz sesli anlatım ve 5 şıklı soru modu'
-                        }
-                      >
-                        🎙️ Canlı Amfi
-                      </Button3D>
-                      <Button3D
-                        size="sm"
-                        tone="ghost"
-                        onClick={() => nav(`/hoca/amfi/${l.id}`)}
-                        disabled={traps === 0}
-                        title={
-                          traps === 0
-                            ? 'Önce en az bir hatalı bölüm işaretle'
-                            : 'Parça parça okunan klasik mod'
-                        }
-                      >
-                        Klasik Mod
-                      </Button3D>
-                      <Button3D size="sm" onClick={() => nav(`/hoca/ders/${l.id}`)}>
-                        Düzenle
-                      </Button3D>
-                      <Button3D
-                        size="sm"
-                        tone={l.isLive ? 'ghost' : 'success'}
-                        onClick={() => toggleLive(l)}
-                      >
-                        {l.isLive ? 'Yayını Durdur' : 'Yayına Al'}
-                      </Button3D>
-                      <Button3D
-                        size="sm"
-                        tone="ghost"
-                        onClick={() => nav(`/hoca/sonuclar/${l.id}`)}
-                      >
-                        Sonuçlar
-                      </Button3D>
-                      <button
-                        onClick={() => remove(l)}
-                        title="Dersi sil"
-                        className="ml-auto rounded-sm px-2.5 py-2 text-xs font-medium text-ink-muted transition-colors hover:bg-mark-soft hover:text-mark"
-                      >
-                        Sil
-                      </button>
+                    {/* Dersi Başlatma ve Yönetim Butonları */}
+                    <div className="mt-auto flex flex-col gap-2.5">
+                      {/* 1. Sıra: Oyunu Başlatma Butonları */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button3D
+                          size="sm"
+                          tone="gold"
+                          onClick={() => nav(`/hoca/amfi-setup/${l.id}`)}
+                          disabled={traps === 0}
+                          title={
+                            traps === 0
+                              ? 'Önce derse en az bir hatalı cümle/tuzak eklemelisiniz.'
+                              : 'Yapay zeka sesli anlatır, öğrenciler tuzakları telefonundan yakalar.'
+                          }
+                          className="w-full text-xs"
+                        >
+                          🎙️ Canlı Amfi Başlat
+                        </Button3D>
+                        <Button3D
+                          size="sm"
+                          tone="ghost"
+                          onClick={() => nav(`/hoca/amfi/${l.id}`)}
+                          disabled={traps === 0}
+                          title={
+                            traps === 0
+                              ? 'Önce derse en az bir hatalı cümle/tuzak eklemelisiniz.'
+                              : 'Öğretmen ekrandan adım adım ilerletir (Sessiz mod).'
+                          }
+                          className="w-full text-xs"
+                        >
+                          ▶ Klasik Oynat
+                        </Button3D>
+                      </div>
+
+                      {/* 2. Sıra: Yönetim ve Sonuç Butonları */}
+                      <div className="flex items-center gap-1.5 pt-1 border-t border-paper-edge/60">
+                        <Button3D
+                          size="sm"
+                          tone="primary"
+                          onClick={() => nav(`/hoca/ders/${l.id}`)}
+                          title="Ders metnini ve tuzak soruları düzenle"
+                        >
+                          ✏️ Düzenle
+                        </Button3D>
+                        <Button3D
+                          size="sm"
+                          tone="ghost"
+                          onClick={() => nav(`/hoca/sonuclar/${l.id}`)}
+                          title="Öğrenci puanları, başarı analizi ve Excel çıktısı"
+                        >
+                          📊 Sonuçlar
+                        </Button3D>
+                        <Button3D
+                          size="sm"
+                          tone={l.isLive ? 'ghost' : 'success'}
+                          onClick={() => toggleLive(l)}
+                          title={
+                            l.isLive
+                              ? 'Dersi öğrencilerin ana sayfasından gizle'
+                              : 'Dersi öğrencilerin katılımına aç'
+                          }
+                        >
+                          {l.isLive ? 'Yayını Kapat' : 'Yayına Al'}
+                        </Button3D>
+                        <button
+                          onClick={() => remove(l)}
+                          title="Dersi tamamen sil"
+                          className="ml-auto rounded-sm px-2.5 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:bg-mark-soft hover:text-mark"
+                        >
+                          🗑️ Sil
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </TiltCard>

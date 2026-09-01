@@ -1,12 +1,8 @@
 /**
- * ARAŞTIRMA ANKETİ — öğrencinin telefonunda, ders bitince.
+ * KASITLI HATA TEMELLİ ANATOMİ EĞİTİMİ ÖĞRENCİ DEĞERLENDİRME ANKETİ
  *
- * Yıldız değerlendirmesinden AYRI ve İSTEĞE BAĞLI. Yıldız beş saniyelik
- * geri bildirim; bu form araştırma verisi. Katılmayan öğrenci de yıldızını
- * vermiş olur, veri tamamen kaybolmaz.
- *
- * Bölüm bölüm ilerliyor: 41 maddeyi telefonda tek sayfada göstermek
- * kimseyi sonuna getirmez.
+ * 15 Maddelik Form & 8 Alt Boyut.
+ * Öğrencinin telefonunda veya bilgisayarında ders bitiminde açılır.
  */
 import { useMemo, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
@@ -14,11 +10,11 @@ import { AnimatePresence, motion } from 'framer-motion'
 import Button3D from '@/components/Button3D'
 import * as ses from '@/lib/session'
 import {
-  ACIK_UCLU,
   ALT_BOYUTLAR,
+  ARASTIRMA_KONUSU,
   CALISMA_BASLIGI,
   CALISMA_BASLIGI_KISA,
-  GENEL_SORULAR,
+  KATILIMCI_BILGILENDIRMESI,
   LIKERT_ETIKETLERI,
   TOPLAM_MADDE,
 } from '@/lib/survey'
@@ -30,8 +26,8 @@ interface Props {
   participant: Participant | null
 }
 
-/** Adımlar: künye → 8 alt boyut → genel → açık uçlu */
-const ADIM_SAYISI = 1 + ALT_BOYUTLAR.length + 2
+/** Adımlar: 0: Temel Bilgiler, 1–8: 8 Alt Boyut */
+const ADIM_SAYISI = 1 + ALT_BOYUTLAR.length
 
 export default function SurveyForm({ sessionId, participant }: Props) {
   const [acik, setAcik] = useState(false)
@@ -44,12 +40,8 @@ export default function SurveyForm({ sessionId, participant }: Props) {
   const [grupKodu, setGrupKodu] = useState('')
   const [oncekiDers, setOncekiDers] = useState<'evet' | 'hayir' | ''>('')
   const [likert, setLikert] = useState<Record<number, number>>({})
-  const [acikUclu, setAcikUclu] = useState<Record<number, string>>({})
 
-  const cevaplanan = useMemo(
-    () => Object.keys(likert).length + Object.values(acikUclu).filter((v) => v.trim()).length,
-    [likert, acikUclu],
-  )
+  const cevaplanan = useMemo(() => Object.keys(likert).length, [likert])
 
   const gonder = async () => {
     if (!participant) return
@@ -64,7 +56,7 @@ export default function SurveyForm({ sessionId, participant }: Props) {
         grupKodu: grupKodu.trim(),
         oncekiDers,
         likert,
-        acikUclu,
+        acikUclu: {},
         createdAt: Date.now(),
       }
       await ses.submitSurvey(r)
@@ -84,35 +76,36 @@ export default function SurveyForm({ sessionId, participant }: Props) {
         animate={{ opacity: 1, y: 0 }}
         className="file-card p-6 text-center"
       >
-        <span className="stamp-verify animate-stamp">ANKET ALINDI</span>
+        <span className="stamp-verify animate-stamp">ANKET TAMAMLANDI</span>
         <p className="mt-4 text-sm leading-relaxed text-ink-muted">
-          Katkın için teşekkürler. Yanıtların yalnızca araştırma kapsamında değerlendirilecek.
+          Katkınız için teşekkür ederiz. Yanıtlarınız yalnızca bilimsel araştırma kapsamında
+          değerlendirilecektir.
         </p>
       </motion.div>
     )
 
-  /* ── Davet ── */
+  /* ── Davet Kartı ── */
   if (!acik)
     return (
       <div className="file-card p-6">
         <p className="label">ARAŞTIRMA ANKETİ</p>
         <h3 className="mt-2 font-display text-lg font-bold text-ink">
-          {CALISMA_BASLIGI_KISA}
-        </h3>
-        <p className="mt-1.5 text-[12px] leading-relaxed text-ink-faint">
           {CALISMA_BASLIGI}
+        </h3>
+        <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+          <strong>Araştırma konusu:</strong> {ARASTIRMA_KONUSU}
         </p>
-        <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-          Bu form, uygulanan derse ilişkin öğrenme deneyimini değerlendirmek için hazırlandı.
-          Yanıtların yalnızca bilimsel araştırma kapsamında kullanılacak ve{' '}
-          <strong className="text-ink">ders başarı notunu etkilemeyecek</strong>.
+        <p className="mt-2 text-xs leading-relaxed text-ink-faint">
+          {KATILIMCI_BILGILENDIRMESI}
         </p>
-        <p className="mt-3 font-mono text-[11px] text-ink-faint">
-          {TOPLAM_MADDE} MADDE · YAKLAŞIK 6 DAKİKA
-        </p>
+        <div className="mt-3 flex items-center justify-between">
+          <span className="font-mono text-[11px] font-bold text-ink-muted">
+            {TOPLAM_MADDE} DEĞERLENDİRME İFADESİ · ~2 DAKİKA
+          </span>
+        </div>
         <div className="mt-5 flex flex-wrap gap-3">
-          <Button3D size="md" onClick={() => setAcik(true)} disabled={!participant}>
-            Ankete Katıl
+          <Button3D size="md" tone="gold" onClick={() => setAcik(true)} disabled={!participant}>
+            📝 Anketi Doldur
           </Button3D>
         </div>
       </div>
@@ -125,9 +118,9 @@ export default function SurveyForm({ sessionId, participant }: Props) {
       {/* İlerleme */}
       <div className="mb-5">
         <div className="flex items-baseline justify-between">
-          <p className="label font-bold">ARAŞTIRMA ANKETİ</p>
+          <p className="label font-bold">ÖĞRENCİ DEĞERLENDİRME ANKETİ</p>
           <span className="font-mono text-[11px] text-ink-muted">
-            {adim + 1}/{ADIM_SAYISI} · {cevaplanan} yanıt
+            {adim === 0 ? 'Giriş' : `${adim}/${ALT_BOYUTLAR.length}`} · {cevaplanan}/{TOPLAM_MADDE} Yanıt
           </span>
         </div>
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-paper-deep">
@@ -146,37 +139,45 @@ export default function SurveyForm({ sessionId, participant }: Props) {
           exit={{ opacity: 0, x: -12 }}
           transition={{ duration: 0.2 }}
         >
-          {/* ── A. Temel bilgiler ── */}
+          {/* ── 0. Adım: Katılımcı Bilgileri ── */}
           {adim === 0 && (
             <div className="space-y-4">
-              <h3 className="font-display text-lg font-bold text-ink">Temel Bilgiler</h3>
+              <div>
+                <h3 className="font-display text-lg font-bold text-ink">Katılımcı Bilgileri</h3>
+                <p className="mt-1 text-xs text-ink-muted">
+                  Yanıt seçenekleri: 1 = Kesinlikle katılmıyorum | 5 = Kesinlikle katılıyorum
+                </p>
+              </div>
+
               <div>
                 <label className="field-label" htmlFor="kkod">
-                  KATILIMCI KODU (isteğe bağlı)
+                  KATILIMCI KODU (İsteğe Bağlı)
                 </label>
                 <input
                   id="kkod"
                   className="field"
                   value={katilimciKodu}
                   onChange={(e) => setKatilimciKodu(e.target.value)}
-                  placeholder="Araştırmacının verdiği kod"
+                  placeholder="Örn: K-101"
                 />
               </div>
+
               <div>
                 <label className="field-label" htmlFor="gkod">
-                  GRUP KODU (isteğe bağlı)
+                  GRUP KODU (İsteğe Bağlı)
                 </label>
                 <input
                   id="gkod"
                   className="field"
                   value={grupKodu}
                   onChange={(e) => setGrupKodu(e.target.value)}
-                  placeholder="Örn: A"
+                  placeholder="Örn: Deney Grubu 1"
                 />
               </div>
+
               <div>
                 <p className="field-label">
-                  DAHA ÖNCE BU KONUDA FORMAL BİR DERS ALDIN MI?
+                  DAHA ÖNCE MESENCEPHALON KONUSUNDA FORMAL BİR DERS ALDINIZ MI?
                 </p>
                 <div className="flex gap-2">
                   {(
@@ -204,7 +205,7 @@ export default function SurveyForm({ sessionId, participant }: Props) {
             </div>
           )}
 
-          {/* ── B–I. Likert bölümleri ── */}
+          {/* ── 1–8. Adımlar: 8 Alt Boyut ── */}
           {adim > 0 && adim <= ALT_BOYUTLAR.length && (
             <LikertBolumu
               boyut={ALT_BOYUTLAR[adim - 1]}
@@ -213,70 +214,15 @@ export default function SurveyForm({ sessionId, participant }: Props) {
             />
           )}
 
-          {/* ── J. Genel değerlendirme ── */}
-          {adim === ALT_BOYUTLAR.length + 1 && (
-            <div className="space-y-6">
-              <h3 className="font-display text-lg font-bold text-ink">Genel Değerlendirme</h3>
-              {GENEL_SORULAR.map((s) => (
-                <div key={s.no}>
-                  <p className="text-sm leading-relaxed text-ink">
-                    <span className="font-mono text-xs font-bold text-ink-muted">{s.no}. </span>
-                    {s.metin}
-                  </p>
-                  <div className="mt-2.5 grid grid-cols-5 gap-1.5">
-                    {s.etiketler.map((et, i) => (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => setLikert((v) => ({ ...v, [s.no]: i + 1 }))}
-                        className={cx(
-                          'rounded-sm border-2 px-1 py-2 text-center transition-colors',
-                          likert[s.no] === i + 1
-                            ? 'border-verify bg-verify text-white'
-                            : 'border-paper-edge bg-paper-card hover:border-ink',
-                        )}
-                      >
-                        <span className="block font-display text-base font-bold">{i + 1}</span>
-                        <span className="mt-0.5 block text-[9px] leading-tight opacity-80">
-                          {et}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── K. Açık uçlu ── */}
-          {sonAdim && (
-            <div className="space-y-5">
-              <h3 className="font-display text-lg font-bold text-ink">Açık Uçlu Sorular</h3>
-              {ACIK_UCLU.map((s) => (
-                <div key={s.no}>
-                  <label className="field-label" htmlFor={`au${s.no}`}>
-                    {s.no}. {s.metin}
-                  </label>
-                  <textarea
-                    id={`au${s.no}`}
-                    className="field min-h-[90px] resize-none"
-                    value={acikUclu[s.no] ?? ''}
-                    onChange={(e) => setAcikUclu((v) => ({ ...v, [s.no]: e.target.value }))}
-                    placeholder="İstersen boş bırakabilirsin"
-                  />
-                </div>
-              ))}
-              {hata && (
-                <p className="rounded-sm border-l-2 border-mark bg-mark-soft px-4 py-3 text-sm text-ink">
-                  {hata}
-                </p>
-              )}
-            </div>
+          {hata && (
+            <p className="mt-4 rounded-sm border-l-2 border-mark bg-mark-soft px-4 py-3 text-sm text-ink">
+              {hata}
+            </p>
           )}
         </motion.div>
       </AnimatePresence>
 
-      {/* Gezinme */}
+      {/* Gezinme Butonları */}
       <div className="mt-6 flex gap-3">
         {adim > 0 && (
           <Button3D size="md" tone="ghost" onClick={() => setAdim((a) => a - 1)} disabled={busy}>
@@ -285,11 +231,11 @@ export default function SurveyForm({ sessionId, participant }: Props) {
         )}
         {sonAdim ? (
           <Button3D size="md" tone="success" full onClick={gonder} disabled={busy}>
-            {busy ? 'Gönderiliyor…' : 'Anketi Gönder'}
+            {busy ? 'Gönderiliyor…' : '✓ Anketi Tamamla & Gönder'}
           </Button3D>
         ) : (
           <Button3D size="md" full onClick={() => setAdim((a) => a + 1)}>
-            Devam
+            İleri ➔
           </Button3D>
         )}
       </div>
@@ -299,13 +245,13 @@ export default function SurveyForm({ sessionId, participant }: Props) {
         onClick={() => setAcik(false)}
         className="mt-4 block w-full text-center font-mono text-[11px] font-bold uppercase tracking-[0.14em] text-ink-faint hover:text-ink-muted"
       >
-        Şimdi değil
+        Kapat
       </button>
     </div>
   )
 }
 
-/* ══════════════ Likert bölümü ══════════════ */
+/* ══════════════ Likert Alt Boyut Bölümü ══════════════ */
 
 function LikertBolumu({
   boyut,
@@ -317,21 +263,32 @@ function LikertBolumu({
   setDeger: (no: number, v: number) => void
 }) {
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
       <div>
-        <h3 className="font-display text-lg font-bold text-ink">{boyut.baslik}</h3>
-        <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
-          1 = {LIKERT_ETIKETLERI[0]} · 5 = {LIKERT_ETIKETLERI[4]}
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="font-display text-lg font-bold text-ink">{boyut.baslik}</h3>
+          <span className="rounded-sm bg-paper-deep px-2 py-0.5 font-mono text-[10px] font-bold text-ink-muted">
+            Madde {boyut.maddeAraligi}
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-ink-faint">
+          1: Kesinlikle katılmıyorum · 3: Kararsızım · 5: Kesinlikle katılıyorum
         </p>
       </div>
 
       {boyut.maddeler.map((m) => (
-        <div key={m.no}>
-          <p className="text-sm leading-relaxed text-ink">
-            <span className="font-mono text-xs font-bold text-ink-muted">{m.no}. </span>
+        <div key={m.no} className="rounded-sm border border-paper-edge bg-paper-card p-3.5">
+          <p className="text-sm font-medium leading-relaxed text-ink">
+            <span className="font-mono text-xs font-bold text-ink-muted mr-1.5">{m.no}.</span>
             {m.metin}
+            {m.ters && (
+              <span className="ml-1.5 text-[10px] font-bold uppercase tracking-wider text-mark">
+                (TERS)
+              </span>
+            )}
           </p>
-          <div className="mt-2 grid grid-cols-5 gap-1.5">
+
+          <div className="mt-3 grid grid-cols-5 gap-1.5">
             {[1, 2, 3, 4, 5].map((v) => (
               <button
                 key={v}
@@ -339,13 +296,22 @@ function LikertBolumu({
                 aria-label={`${m.no}. madde: ${LIKERT_ETIKETLERI[v - 1]}`}
                 onClick={() => setDeger(m.no, v)}
                 className={cx(
-                  'rounded-sm border-2 py-2.5 font-display text-base font-bold transition-colors',
+                  'flex flex-col items-center justify-center rounded-sm border-2 py-2 transition-all',
                   degerler[m.no] === v
-                    ? 'border-verify bg-verify text-white'
-                    : 'border-paper-edge bg-paper-card text-ink-muted hover:border-ink',
+                    ? 'border-verify bg-verify text-white shadow-sm font-bold scale-[1.03]'
+                    : 'border-paper-edge bg-paper-deep text-ink-muted hover:border-ink hover:text-ink',
                 )}
               >
-                {v}
+                <span className="font-display text-base font-bold leading-none">{v}</span>
+                <span className="mt-1 text-[8px] leading-tight text-center truncate max-w-[50px] opacity-80">
+                  {v === 1
+                    ? 'Katılmıyorum'
+                    : v === 3
+                      ? 'Kararsız'
+                      : v === 5
+                        ? 'Katılıyorum'
+                        : `${v}`}
+                </span>
               </button>
             ))}
           </div>

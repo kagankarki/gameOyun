@@ -756,19 +756,21 @@ export default function AmfiSetup() {
       </div>
 
       <QuizUploader
-        baslik="ÖN TEST · DERSTEN ÖNCE"
-        aciklama="Öğrenci dersi dinlemeden bu testi çözer. Başlangıç seviyesini ölçer."
+        baslik="ÖN TEST (Ders Öncesi Seviye Tespiti)"
+        aciklama="Öğrenci dersi dinlemeden önce bu testi çözer. Word (.docx) veya metin yükleyebilir, AI ile üretebilirsiniz."
         tone="pre"
         questions={pretest}
         onChange={setPretest}
+        lessonTitle={lesson.title}
       />
 
       <QuizUploader
-        baslik="SON TEST · DERSTEN SONRA"
-        aciklama="Ders bittiğinde aynı öğrenciler bunu çözer. Ön testle farkı öğrenmeyi gösterir."
+        baslik="SON TEST (Ders Sonrası Kazanım Ölçümü)"
+        aciklama="Ders anlatımı ve tuzak yakalama bittiğinde öğrenciler bunu çözer. Ön testle farkı öğrenme gelişimini gösterir."
         tone="post"
         questions={posttest}
         onChange={setPosttest}
+        lessonTitle={lesson.title}
       />
 
       {/* Başlat */}

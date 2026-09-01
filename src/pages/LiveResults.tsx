@@ -443,21 +443,23 @@ export default function LiveResults() {
           ) : (
             <div className="mt-5 space-y-2">
               {boyutlar.map((b) => (
-                <div key={b.kod} className="flex items-center gap-3">
+                <div key={b.kod} className="flex items-center gap-3 rounded-sm bg-paper-deep/60 px-3 py-2">
                   <span className="w-5 shrink-0 font-mono text-xs font-bold text-ink-muted">
-                    {b.kod}
+                    {b.kod}.
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-sm text-ink">
-                    {b.baslik}
-                  </span>
-                  <div className="hidden h-2 w-24 shrink-0 overflow-hidden rounded-sm bg-paper-deep sm:block">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-ink">{b.baslik}</p>
+                    <p className="font-mono text-[10px] text-ink-faint">Madde {b.maddeAraligi}</p>
+                  </div>
+                  <div className="hidden h-2.5 w-28 shrink-0 overflow-hidden rounded-full bg-paper-deep sm:block">
                     <div
-                      className="h-full bg-verify"
+                      className="h-full bg-verify rounded-full transition-all"
                       style={{ width: `${(b.ortalama / 5) * 100}%` }}
                     />
                   </div>
-                  <span className="w-10 shrink-0 text-right font-display font-bold text-ink">
+                  <span className="w-12 shrink-0 text-right font-display text-sm font-bold text-ink">
                     {b.ortalama.toFixed(2)}
+                    <span className="text-[10px] font-normal text-ink-muted">/5</span>
                   </span>
                 </div>
               ))}

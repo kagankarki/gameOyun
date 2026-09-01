@@ -340,17 +340,18 @@ export function exportSessionToExcel(data: ExportData) {
     makeRow(
       [
         makeCell(
-          'ARAŞTIRMA ANKETİ ALT BOYUTLARI VE ORTALAMALARI',
+          'KASITLI HATA TEMELLİ ANATOMİ EĞİTİMİ ÖĞRENCİ DEĞERLENDİRME ANKETİ',
           'sMainTitle',
           'String',
-          4,
+          5,
         ),
       ],
       30,
     ),
     makeRow([
-      makeCell('Alt Boyut Kodu', 'sHeaderCenter'),
+      makeCell('Alt Boyut No', 'sHeaderCenter'),
       makeCell('Alt Boyut Başlığı', 'sHeaderLeft'),
+      makeCell('Maddeler', 'sHeaderCenter'),
       makeCell('Ortalama Puan (1 - 5)', 'sHeaderRight'),
       makeCell('Dolduran Öğrenci Sayısı', 'sHeaderCenter'),
     ], 26),
@@ -358,7 +359,7 @@ export function exportSessionToExcel(data: ExportData) {
 
   if (boyutlar.length === 0) {
     sheet4Rows.push(
-      makeRow([makeCell('Henüz doldurulmuş araştırma anketi bulunmuyor.', 'sDataCenter', 'String', 3)], 26),
+      makeRow([makeCell('Henüz doldurulmuş araştırma anketi bulunmuyor.', 'sDataCenter', 'String', 4)], 26),
     )
   } else {
     boyutlar.forEach((b) => {
@@ -366,6 +367,7 @@ export function exportSessionToExcel(data: ExportData) {
         makeRow([
           makeCell(b.kod, 'sDataCenter'),
           makeCell(b.baslik, 'sDataBold'),
+          makeCell(`Madde ${b.maddeAraligi}`, 'sDataCenter'),
           makeCell(b.ortalama.toFixed(2), 'sDataNumberBold', 'Number'),
           makeCell(surveys.length, 'sDataCenter', 'Number'),
         ], 22),
@@ -375,7 +377,7 @@ export function exportSessionToExcel(data: ExportData) {
 
   sheet4Rows.push(makeRow([]))
   sheet4Rows.push(
-    makeRow([makeCell('BİREYSEL ÖĞRENCİ ANKET YANITLARI (M1–M30 LIKERT)', 'sSectionHeader', 'String', 33)], 24),
+    makeRow([makeCell('BİREYSEL ÖĞRENCİ ANKET YANITLARI (M1–M15 LIKERT)', 'sSectionHeader', 'String', 21)], 24),
   )
 
   const surveyHeaderCells = [
@@ -385,19 +387,19 @@ export function exportSessionToExcel(data: ExportData) {
     makeCell('Grup Kodu', 'sHeaderCenter'),
     makeCell('Daha Önce Ders Aldı mı?', 'sHeaderCenter'),
     makeCell('Tarih', 'sHeaderCenter'),
-    ...Array.from({ length: 30 }, (_, idx) => makeCell(`M${idx + 1}`, 'sHeaderCenter')),
+    ...Array.from({ length: 15 }, (_, idx) => makeCell(`M${idx + 1}`, 'sHeaderCenter')),
   ]
   sheet4Rows.push(makeRow(surveyHeaderCells, 24))
 
   if (surveys.length === 0) {
     sheet4Rows.push(
-      makeRow([makeCell('Henüz anket yanıtı kaydedilmedi.', 'sDataCenter', 'String', 35)], 24),
+      makeRow([makeCell('Henüz anket yanıtı kaydedilmedi.', 'sDataCenter', 'String', 21)], 24),
     )
   } else {
     surveys.forEach((s, idx) => {
       const p = participants.find((part) => part.id === s.participantId)
       const pName = p ? p.name : s.participantId
-      const itemCells = Array.from({ length: 30 }, (_, mIdx) => {
+      const itemCells = Array.from({ length: 15 }, (_, mIdx) => {
         const val = s.likert[mIdx + 1]
         return makeCell(val !== undefined ? val : '-', 'sDataCenter', typeof val === 'number' ? 'Number' : 'String')
       })

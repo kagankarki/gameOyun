@@ -31,8 +31,6 @@ const harfIndeksi = (raw: string): number => {
 /** "B", "b", "2", "Cevap: B" gibi girdileri 0 tabanlı indekse çevirir. */
 export function cevapIndeksi(raw: unknown, optionCount: number): number {
   if (typeof raw === 'number' && Number.isFinite(raw)) {
-    // JSON'da 0 tabanlı `correctIndex` de gelebilir, 1 tabanlı `answer` de.
-    // 0 geldiyse zaten indekstir; şık sayısına sığmıyorsa 1 tabanlı sayarız.
     if (raw >= 0 && raw < optionCount) return raw
     if (raw >= 1 && raw <= optionCount) return raw - 1
     return 0
@@ -46,9 +44,81 @@ export function cevapIndeksi(raw: unknown, optionCount: number): number {
   return 0
 }
 
-const SORU_BASI = /^\s*(?:S(?:oru)?\s*)?(\d{1,3})\s*[).:\-–]\s*(.+)$/i
-const SIK_BASI = /^\s*([*+✓]?)\s*([A-Ha-h])\s*[).:\-–]\s*(\S.*)$/
-const CEVAP_SATIRI = /^\s*(?:cevap|doğru|dogru|yanıt|yanit|answer|key)\s*[:=\-]?\s*(.+)$/i
+const SORU_BASI = /^\s*(?:S(?:oru)?\s*)?(\d{1,3})\s*[).:\-–\]]\s*(.+)$/i
+const SIK_BASI = /^\s*([*+✓]?)\s*([A-Ha-h1-8])\s*[).:\-–\]]\s*(\S.*)$/
+const CEVAP_SATIRI = /^\s*(?:cevap|doğru|dogru|yanıt|yanit|answer|key|doğru cevap|dogru cevap)\s*[:=\-]?\s*([A-Ha-h1-8]|\S.*)$/i
+
+/**
+ * Word (.docx) dosyasından saf metni ayıklar.
+ */
+async function extractTextFromDocx(buffer: ArrayBuffer): Promise<string> {
+  try {
+    const bytes = new Uint8Array(buffer)
+    const view = new DataView(buffer)
+    let offset = 0
+
+    while (offset < bytes.length - 30) {
+      if (view.getUint32(offset, true) === 0x04034b50) {
+        const compression = view.getUint16(offset + 8, true)
+        const compSize = view.getUint32(offset + 18, true)
+        const nameLen = view.getUint16(offset + 26, true)
+        const extraLen = view.getUint16(offset + 28, true)
+
+        const fileNameBytes = bytes.slice(offset + 30, offset + 30 + nameLen)
+        const fileName = new TextDecoder().decode(fileNameBytes)
+        const dataStart = offset + 30 + nameLen + extraLen
+
+        if (fileName === 'word/document.xml') {
+          const compressedData = bytes.slice(dataStart, dataStart + compSize)
+          let xmlText = ''
+          if (compression === 8 && typeof DecompressionStream !== 'undefined') {
+            const ds = new DecompressionStream('deflate-raw')
+            const writer = ds.writable.getWriter()
+            writer.write(compressedData)
+            writer.close()
+            const resp = new Response(ds.readable)
+            xmlText = await resp.text()
+          } else if (compression === 0) {
+            xmlText = new TextDecoder().decode(compressedData)
+          }
+
+          if (xmlText) {
+            const parsed = xmlText
+              .replace(/<\/w:p>/g, '\n')
+              .replace(/<w:tab\/>/g, '\t')
+              .replace(/<[^>]+>/g, '')
+              .replace(/&amp;/g, '&')
+              .replace(/&lt;/g, '<')
+              .replace(/&gt;/g, '>')
+              .replace(/&quot;/g, '"')
+              .replace(/&apos;/g, "'")
+            return parsed.trim()
+          }
+        }
+
+        offset = dataStart + compSize
+      } else {
+        offset++
+      }
+    }
+  } catch (err) {
+    console.warn('[docx] ayrıştırma hatası:', err)
+  }
+  return ''
+}
+
+/**
+ * Yüklenen döküman / soru dosyasını okur (.docx, .txt, .md, .json, .csv vb.)
+ */
+export async function readDocumentFile(file: File): Promise<string> {
+  const name = file.name.toLowerCase()
+  if (name.endsWith('.docx')) {
+    const buffer = await file.arrayBuffer()
+    const docxText = await extractTextFromDocx(buffer)
+    if (docxText.trim()) return docxText
+  }
+  return await file.text()
+}
 
 /** Ayrıştırma sonucu — kısmen başarılı olabilir, hataları da döndürüyoruz. */
 export interface ParseResult {

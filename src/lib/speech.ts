@@ -8,6 +8,8 @@
  * 2. Yedek: Tarayıcı Web Speech API (speechSynthesis)
  */
 
+import { charAtTime, type KelimeZamani } from './transcribe'
+
 export interface VoicePreset {
   id: string
   name: string
@@ -248,6 +250,12 @@ export function playAudioFile(
   blob: Blob,
   textLength: number,
   opts: SpeakOptions = {},
+  /**
+   * Yazıya dökmeden gelen kelime zamanları. Verilirse konum oransal
+   * tahminle değil GERÇEK ölçümle bulunur; ders metni dökümden
+   * saptıysa çağıran taraf bunu göndermez (bkz. transcribe.ts).
+   */
+  words?: KelimeZamani[],
 ): SpeakHandle {
   cancelSpeech()
 
@@ -276,6 +284,15 @@ export function playAudioFile(
    */
   const takip = () => {
     if (state.cancelled) return
+    const ms = audio.currentTime * 1000
+
+    // 1) Kelime zamanları varsa gerçek konum
+    if (words?.length) {
+      opts.onBoundary?.(Math.min(textLength, charAtTime(words, ms)))
+      return
+    }
+
+    // 2) Yoksa oransal tahmin: ses %40'ındaysa metin de %40'ında
     const sure = audio.duration
     if (!Number.isFinite(sure) || sure <= 0) return
     const oran = Math.min(1, audio.currentTime / sure)

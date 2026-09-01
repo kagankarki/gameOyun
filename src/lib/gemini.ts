@@ -6,7 +6,8 @@
  * anda basınca ne gecikme olur ne de API kotası zorlanır; internet kopsa
  * bile ders yürür.
  */
-import type { FollowUpQuestion } from './types'
+import type { FollowUpQuestion, QuizQuestion } from './types'
+import { uid } from './utils'
 
 const API_KEY = import.meta.env.VITE_GEMINI_API_KEY
 
@@ -277,3 +278,149 @@ Aşağıdaki JSON şemasında geçerli bir JSON döndür:
 
   return { error: `Soru üretilemedi (${lastError}). Şıkları elle doldurabilirsin.` }
 }
+
+export interface ExtractDocResult {
+  questions: QuizQuestion[]
+  modelUsed?: string
+  error?: string
+}
+
+/**
+ * Yüklenen döküman / metin içeriğinden PreTest veya PostTest için
+ * çoktan seçmeli soruları ayıklar veya ders notundan sorular üretir.
+ */
+export async function extractQuestionsFromDocumentOrText(args: {
+  rawText: string
+  kind: 'pre' | 'post'
+  targetCount?: number
+  lessonTitle?: string
+}): Promise<ExtractDocResult> {
+  if (!API_KEY) {
+    return { questions: [], error: 'Gemini API anahtarı tanımlı değil. Dosyayı standart metin biçiminde yükleyebilirsiniz.' }
+  }
+
+  const prompt = `Sen üniversite düzeyinde tıp, anatomi ve sağlık bilimleri dersleri için sınav hazırlayan uzman bir öğretim asistanısın.
+
+Aşağıdaki döküman/metin içeriğini incele.
+Ders: ${args.lessonTitle || 'Genel Tıp / Anatomi Dersi'}
+Test Türü: ${args.kind === 'pre' ? 'ÖN TEST (Ders öncesi bilgi ölçümü)' : 'SON TEST (Ders sonrası kazanım ölçümü)'}
+
+GÖREVİN:
+1. Eğer metinde doğrudan sorular ve şıklar varsa: Bu soruları, şıklarını ve doğru cevabını tespit edip JSON formatına dönüştür.
+2. Eğer metin bir ders notu, özet veya konu anlatımı ise: Bu metindeki kritik bilgileri ölçen kaliteli, çoktan seçmeli ${args.targetCount || 5} adet soru oluştur.
+
+KURALLAR:
+- Her soru için 4 veya 5 seçenek (A, B, C, D, E) olsun.
+- "options" dizisinde şık metinleri bulunsun (başındaki A), B) harfleri olmadan).
+- "correctIndex" doğru şıkkın 0-tabanlı indeksidir (0=A, 1=B, 2=C, 3=D, 4=E).
+- "correctOptionLetter" doğru şık harfidir ("A", "B", "C", "D", "E").
+- Soru ve şıklar Türkçe olsun, orijinal anatomik/tıbbi terimleri koru.
+
+METİN İÇERİĞİ:
+"""
+${args.rawText.slice(0, 15000)}
+"""
+
+Aşağıdaki JSON formatında sadece geçerli bir JSON dizisi döndür:
+[
+  {
+    "question": "Soru metni buraya",
+    "options": ["A seçeneği", "B seçeneği", "C seçeneği", "D seçeneği", "E seçeneği"],
+    "correctIndex": 0,
+    "correctOptionLetter": "A"
+  }
+]`
+
+  const candidateModels = await getActiveModels(API_KEY)
+  let lastError = ''
+
+  for (const model of candidateModels) {
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${API_KEY}`
+
+    try {
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.4,
+            topP: 0.9,
+            maxOutputTokens: 2048,
+            responseMimeType: 'application/json',
+          },
+        }),
+      })
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}))
+        lastError = err?.error?.message ?? `Model ${model} hatası: ${response.status}`
+        continue
+      }
+
+      const data = await response.json()
+      const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+
+      let parsed: any = null
+      try {
+        const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim()
+        parsed = JSON.parse(cleaned)
+      } catch {
+        const start = text.indexOf('[')
+        const end = text.lastIndexOf(']')
+        if (start >= 0 && end > start) {
+          try {
+            parsed = JSON.parse(text.slice(start, end + 1))
+          } catch {}
+        }
+      }
+
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const questions: QuizQuestion[] = []
+        for (const item of parsed) {
+          const qText = String(item.question || item.soru || '').trim()
+          let opts: string[] = []
+          const rawOpts = item.options || item.choices || item.siklar || item.secenekler
+          if (Array.isArray(rawOpts)) {
+            opts = rawOpts.map((o) => String(o ?? '').trim()).filter(Boolean)
+          } else if (rawOpts && typeof rawOpts === 'object') {
+            opts = Object.values(rawOpts).map((o) => String(o ?? '').trim()).filter(Boolean)
+          }
+          if (!qText || opts.length < 2) continue
+
+          opts = opts.map((opt) => opt.replace(/^[A-Ea-e1-5][\).\-\:\s]+\s*/, '').trim())
+
+          let cIdx = 0
+          if (typeof item.correctIndex === 'number') {
+            cIdx = Math.min(Math.max(0, item.correctIndex), opts.length - 1)
+          } else if (typeof item.correctOptionLetter === 'string') {
+            const letter = item.correctOptionLetter.trim().toUpperCase()
+            if (['A', 'B', 'C', 'D', 'E'].includes(letter)) {
+              cIdx = letter.charCodeAt(0) - 65
+            }
+          }
+
+          questions.push({
+            id: uid('q'),
+            question: qText,
+            options: opts.slice(0, 5),
+            correctIndex: Math.min(cIdx, Math.max(0, opts.length - 1)),
+            points: 1,
+          })
+        }
+
+        if (questions.length > 0) {
+          return { questions, modelUsed: model }
+        }
+      }
+
+      lastError = 'JSON formatı sorulara dönüştürülemedi.'
+    } catch (err) {
+      console.error(`[gemini] ${model} istek hatası:`, err)
+      lastError = (err as Error).message || 'Bağlantı hatası.'
+    }
+  }
+
+  return { questions: [], error: `Sorular ayıklanamadı (${lastError}).` }
+}
+

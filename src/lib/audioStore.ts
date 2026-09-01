@@ -15,6 +15,8 @@
  * host ekranı bunu söyleyip dosyayı yeniden seçme imkânı verir.
  */
 
+import type { KelimeZamani } from './transcribe'
+
 const DB_ADI = 'hy-audio'
 const STORE = 'files'
 const SURUM = 1
@@ -29,6 +31,13 @@ export interface DersSesi {
   durationMs: number
   blob: Blob
   savedAt: number
+  /** Otomatik yazıya dökme sonucu — hoca metni düzenlemiş olabilir */
+  transcript?: string
+  /**
+   * Kelime zaman damgaları. Ders metni dökümle aynı kaldığı sürece
+   * okuma konumu oransal tahminle değil, bu ölçümle hesaplanır.
+   */
+  words?: KelimeZamani[]
 }
 
 /** Oturum dokümanına yazılan herkese açık künye — dosyanın kendisi değil */
@@ -90,6 +99,19 @@ export function sesSuresi(blob: Blob): Promise<number> {
     setTimeout(() => bitir(0), 8000)
     a.src = url
   })
+}
+
+/** Yazıya dökme sonucunu mevcut kayda ekler. */
+export async function dokumKaydet(
+  lessonId: string,
+  transcript: string,
+  words: KelimeZamani[],
+): Promise<DersSesi | null> {
+  const mevcut = await sesGetir(lessonId)
+  if (!mevcut) return null
+  const guncel: DersSesi = { ...mevcut, transcript, words }
+  await islem('readwrite', (s) => s.put(guncel))
+  return guncel
 }
 
 export async function sesKaydet(lessonId: string, file: File): Promise<DersSesi> {

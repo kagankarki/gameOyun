@@ -19,6 +19,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import AudioUploader from '@/components/AudioUploader'
 import Button3D from '@/components/Button3D'
 import Loader from '@/components/Loader'
+import QuizUploader from '@/components/QuizUploader'
 import { useToast } from '@/components/Toast'
 import { useAuth } from '@/context/AuthContext'
 import * as api from '@/lib/api'
@@ -27,7 +28,7 @@ import { generateFollowUp, isGeminiConfigured, type Zorluk } from '@/lib/gemini'
 import { kunye, type DersSesi } from '@/lib/audioStore'
 import { ara, cumleAraligi, reanchorWrongs, trimRange, type Eslesme } from '@/lib/marking'
 import { EASE } from '@/lib/motion'
-import type { FollowUpQuestion, Lesson, WrongBlock } from '@/lib/types'
+import type { FollowUpQuestion, Lesson, QuizQuestion, WrongBlock } from '@/lib/types'
 import { cx } from '@/lib/utils'
 
 /** Yeni bir soru eklenirken 5 şıklı başlangıç hâli */
@@ -50,6 +51,9 @@ export default function LessonEditor() {
   const [lesson, setLesson] = useState<Lesson | null>(null)
   const [script, setScript] = useState('')
   const [wrongs, setWrongs] = useState<WrongBlock[]>([])
+  const [pretest, setPretest] = useState<QuizQuestion[]>([])
+  const [posttest, setPosttest] = useState<QuizQuestion[]>([])
+  const [activeTab, setActiveTab] = useState<'content' | 'pretest' | 'posttest'>('content')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [starting, setStarting] = useState(false)
@@ -76,7 +80,6 @@ export default function LessonEditor() {
       if (!alive) return
       if (l) {
         setLesson(l)
-        // Eğer script varsa onu, yoksa eski blokları birleştirip kullan
         if (l.script) {
           setScript(l.script)
         } else if (l.blocks?.length) {
@@ -85,7 +88,6 @@ export default function LessonEditor() {
         if (l.wrongBlocks?.length) {
           setWrongs(l.wrongBlocks)
         } else if (l.blocks?.length) {
-          // Eski bloklardaki isWrong olanları başlangıç olarak dönüştür
           const initialWrongs: WrongBlock[] = []
           let offset = 0
           l.blocks.forEach((b, idx) => {
@@ -103,10 +105,12 @@ export default function LessonEditor() {
                 difficulty: 'orta',
               })
             }
-            offset = end + 2 // '\n\n' mesafesi
+            offset = end + 2
           })
           if (initialWrongs.length) setWrongs(initialWrongs)
         }
+        if (l.pretest?.length) setPretest(l.pretest)
+        if (l.posttest?.length) setPosttest(l.posttest)
       }
       setLoading(false)
     })
@@ -313,6 +317,8 @@ export default function LessonEditor() {
         teacherName: user?.name || lesson.teacherName,
         script: script.trim(),
         wrongBlocks: wrongs,
+        pretest,
+        posttest,
         // Geriye dönük uyumluluk: paragraflardan bloklar oluştur
         blocks: script
           .split(/\n\n+/)
@@ -329,7 +335,7 @@ export default function LessonEditor() {
 
       await api.saveLesson(updated)
       setLesson(updated)
-      if (!silent) toast('Ders başarıyla kaydedildi.', 'success')
+      if (!silent) toast('Ders ve test soruları başarıyla kaydedildi.', 'success')
       return updated
     } catch (e) {
       toast('Kaydedilirken hata oluştu: ' + (e as Error).message, 'error')
@@ -360,10 +366,8 @@ export default function LessonEditor() {
         readingMode: 'continuous',
         script: saved.script || script,
         wrongBlocks: wrongs,
-        // Derse kayıtlı ön/son test ve bu cihazdaki ses kaydı da oturuma gitsin —
-        // bu düğme Amfi Hazırlık ekranına uğramadan oturum açıyor.
-        pretest: saved.pretest ?? [],
-        posttest: saved.posttest ?? [],
+        pretest: pretest,
+        posttest: posttest,
         audio: sesKaydi ? kunye(sesKaydi) : null,
       })
       nav(`/hoca/amfi-host-v2/${saved.id}?sessionId=${session.id}`)
@@ -409,7 +413,7 @@ export default function LessonEditor() {
 
         <div className="flex flex-wrap items-center gap-2">
           <Button3D size="md" tone="ghost" onClick={() => kaydet()} disabled={saving || starting}>
-            {saving ? 'Kaydediliyor…' : 'Kaydet'}
+            {saving ? 'Kaydediliyor…' : '💾 Tümünü Kaydet'}
           </Button3D>
           <Button3D
             size="md"
@@ -457,6 +461,100 @@ export default function LessonEditor() {
           </div>
         </div>
       </div>
+
+      {/* ── 3 Aşamalı Akış Sekmeleri ── */}
+      <div className="grid grid-cols-3 gap-2 p-1.5 bg-paper-deep rounded-sm border border-paper-edge">
+        <button
+          type="button"
+          onClick={() => setActiveTab('pretest')}
+          className={cx(
+            'flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-sm font-bold text-xs sm:text-sm transition-all',
+            activeTab === 'pretest'
+              ? 'bg-paper-card text-ink shadow-paper border border-paper-edge'
+              : 'text-ink-muted hover:text-ink',
+          )}
+        >
+          <span>1. Ön Test (PreTest)</span>
+          <span
+            className={cx(
+              'px-2 py-0.5 rounded-full text-[11px] font-mono',
+              pretest.length > 0 ? 'bg-flag text-white' : 'bg-paper-edge text-ink-muted',
+            )}
+          >
+            {pretest.length} Soru
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('content')}
+          className={cx(
+            'flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-sm font-bold text-xs sm:text-sm transition-all',
+            activeTab === 'content'
+              ? 'bg-paper-card text-ink shadow-paper border border-paper-edge'
+              : 'text-ink-muted hover:text-ink',
+          )}
+        >
+          <span>2. Hatayı Yakala (Canlı Ders)</span>
+          <span
+            className={cx(
+              'px-2 py-0.5 rounded-full text-[11px] font-mono',
+              wrongs.length > 0 ? 'bg-mark text-white' : 'bg-paper-edge text-ink-muted',
+            )}
+          >
+            {wrongs.length} Tuzak
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('posttest')}
+          className={cx(
+            'flex flex-col sm:flex-row items-center justify-center gap-1.5 py-3 px-3 rounded-sm font-bold text-xs sm:text-sm transition-all',
+            activeTab === 'posttest'
+              ? 'bg-paper-card text-ink shadow-paper border border-paper-edge'
+              : 'text-ink-muted hover:text-ink',
+          )}
+        >
+          <span>3. Son Test (PostTest)</span>
+          <span
+            className={cx(
+              'px-2 py-0.5 rounded-full text-[11px] font-mono',
+              posttest.length > 0 ? 'bg-verify text-white' : 'bg-paper-edge text-ink-muted',
+            )}
+          >
+            {posttest.length} Soru
+          </span>
+        </button>
+      </div>
+
+      {/* ── 1. AŞAMA: ÖN TEST ALANI ── */}
+      {activeTab === 'pretest' && (
+        <QuizUploader
+          baslik="Ön Test Soruları (Pre-Test)"
+          aciklama="Ders anlatımı başlamadan önce öğrencilere yöneltilecek ölçme soruları. Word (.docx) veya metin dosyası yükleyebilir ya da Yapay Zekâ ile üretebilirsiniz."
+          tone="pre"
+          questions={pretest}
+          onChange={setPretest}
+          lessonTitle={lesson.title}
+        />
+      )}
+
+      {/* ── 3. AŞAMA: SON TEST ALANI ── */}
+      {activeTab === 'posttest' && (
+        <QuizUploader
+          baslik="Son Test Soruları (Post-Test)"
+          aciklama="Ders anlatımı ve tuzak yakalama tamamlandıktan sonra öğrenme kazanımını ve gelişimini ölçmek için yöneltilecek sorular."
+          tone="post"
+          questions={posttest}
+          onChange={setPosttest}
+          lessonTitle={lesson.title}
+        />
+      )}
+
+      {/* ── 2. AŞAMA: DERS METNİ & HATAYI YAKALAMA ALANI ── */}
+      {activeTab === 'content' && (
+        <>
 
       {/* ── Kesintisiz Ders Notu Alanı ── */}
       <div className="file-card space-y-3 p-6">
@@ -932,6 +1030,8 @@ export default function LessonEditor() {
           </Button3D>
         </div>
       </div>
+        </>
+      )}
     </motion.div>
   )
 }

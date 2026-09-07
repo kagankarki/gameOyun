@@ -202,6 +202,12 @@ export interface SpeakOptions {
 export interface SpeakHandle {
   /** Konuşmayı keser; onEnd tetiklenmez */
   cancel: () => void
+  /** Konuşmayı / sesi duraklatır */
+  pause?: () => void
+  /** Duraklatılan konuşmayı / sesi devam ettirir */
+  resume?: () => void
+  /** Oynatma şu an duraklatılmış mı? */
+  isPaused?: () => boolean
 }
 
 let activeAudio: HTMLAudioElement | null = null
@@ -337,6 +343,21 @@ export function playAudioFile(
       temizle()
       cancelSpeech()
     },
+    pause: () => {
+      if (activeTickId !== null) {
+        clearInterval(activeTickId)
+        activeTickId = null
+      }
+      audio.pause()
+    },
+    resume: () => {
+      if (state.cancelled) return
+      void audio.play()
+      if (activeTickId === null) {
+        activeTickId = setInterval(takip, 250)
+      }
+    },
+    isPaused: () => audio.paused,
   }
 }
 
@@ -586,6 +607,26 @@ export function speak(
     cancel: () => {
       state.cancelled = true
       cancelSpeech()
+    },
+    pause: () => {
+      if (activeAudio) {
+        activeAudio.pause()
+      } else if (isSpeechSynthesisSupported()) {
+        speechSynthesis.pause()
+      }
+    },
+    resume: () => {
+      if (state.cancelled) return
+      if (activeAudio) {
+        void activeAudio.play()
+      } else if (isSpeechSynthesisSupported()) {
+        speechSynthesis.resume()
+      }
+    },
+    isPaused: () => {
+      if (activeAudio) return activeAudio.paused
+      if (isSpeechSynthesisSupported()) return speechSynthesis.paused
+      return false
     },
   }
 

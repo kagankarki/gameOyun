@@ -25,7 +25,7 @@ import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
 import { generateFollowUp, isGeminiConfigured, type Zorluk } from '@/lib/gemini'
 import { ara, cumleAraligi, reanchorWrongs, trimRange, type Eslesme } from '@/lib/marking'
-import { kunye, sureMetni, type DersSesi } from '@/lib/audioStore'
+import { kunye, sureMetni, videoKunye, type DersSesi, type DersVideosu } from '@/lib/audioStore'
 import { EASE } from '@/lib/motion'
 import type { FollowUpQuestion, Lesson, QuizQuestion, WrongBlock } from '@/lib/types'
 import { cx } from '@/lib/utils'
@@ -69,6 +69,8 @@ export default function AmfiSetup() {
   const [arama, setArama] = useState('')
   /* Hocanın kendi ses kaydı — dosya bu cihazda saklanır (AudioUploader) */
   const [sesKaydi, setSesKaydi] = useState<DersSesi | null>(null)
+  /* Hocanın yüklediği video kaydı — dosya bu cihazda saklanır */
+  const [videoKaydi, setVideoKaydi] = useState<DersVideosu | null>(null)
   /** Metin düzenlenirken yeri bulunamayıp düşen işaretler */
   const [dusenler, setDusenler] = useState<string[]>([])
 
@@ -316,6 +318,7 @@ export default function AmfiSetup() {
         pretest: on,
         posttest: son,
         audio: sesKaydi ? kunye(sesKaydi) : null,
+        video: videoKaydi ? videoKunye(videoKaydi) : null,
       })
       navigate(`/hoca/amfi-host-v2/${lesson.id}?sessionId=${session.id}`)
     } catch (err) {
@@ -364,7 +367,11 @@ export default function AmfiSetup() {
         </p>
       </motion.div>
 
-      <AudioUploader lessonId={lesson.id} onChange={setSesKaydi} />
+      <AudioUploader
+        lessonId={lesson.id}
+        onChange={setSesKaydi}
+        onVideoChange={setVideoKaydi}
+      />
 
       {/* Ders notu */}
       <div className="file-card space-y-3 p-6">
@@ -374,9 +381,11 @@ export default function AmfiSetup() {
           </label>
           <span className="label">
             {script.length} KARAKTER ·{' '}
-            {sesKaydi
-              ? `KAYIT ${sureMetni(sesKaydi.durationMs)}`
-              : `~${okumaDk} DK OKUMA`}
+            {videoKaydi
+              ? `VİDEO ${sureMetni(videoKaydi.durationMs)}`
+              : sesKaydi
+                ? `KAYIT ${sureMetni(sesKaydi.durationMs)}`
+                : `~${okumaDk} DK OKUMA`}
           </span>
         </div>
         <textarea

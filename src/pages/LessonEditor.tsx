@@ -25,7 +25,7 @@ import { useAuth } from '@/context/AuthContext'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
 import { generateFollowUp, isGeminiConfigured, type Zorluk } from '@/lib/gemini'
-import { kunye, type DersSesi } from '@/lib/audioStore'
+import { kunye, videoKunye, type DersSesi, type DersVideosu } from '@/lib/audioStore'
 import { ara, cumleAraligi, reanchorWrongs, trimRange, type Eslesme } from '@/lib/marking'
 import { EASE } from '@/lib/motion'
 import type { FollowUpQuestion, Lesson, QuizQuestion, WrongBlock } from '@/lib/types'
@@ -65,6 +65,8 @@ export default function LessonEditor() {
   const [dusenler, setDusenler] = useState<string[]>([])
   /** Hocanın yüklediği ders kaydı — dosya bu cihazda (AudioUploader) */
   const [sesKaydi, setSesKaydi] = useState<DersSesi | null>(null)
+  /** Hocanın yüklediği video kaydı — dosya bu cihazda (AudioUploader) */
+  const [videoKaydi, setVideoKaydi] = useState<DersVideosu | null>(null)
   const [explanation, setExplanation] = useState('')
   const [correction, setCorrection] = useState('')
   const [soru, setSoru] = useState<FollowUpQuestion>(BOS_SORU_5)
@@ -369,6 +371,7 @@ export default function LessonEditor() {
         pretest: pretest,
         posttest: posttest,
         audio: sesKaydi ? kunye(sesKaydi) : null,
+        video: videoKaydi ? videoKunye(videoKaydi) : null,
       })
       nav(`/hoca/amfi-host-v2/${saved.id}?sessionId=${session.id}`)
     } catch (err) {
@@ -695,8 +698,12 @@ export default function LessonEditor() {
         )}
       </div>
 
-      {/* Ders sesi — TTS yerine hocanın kendi kaydıyla anlatmak için */}
-      <AudioUploader lessonId={lesson?.id} onChange={setSesKaydi} />
+      {/* Ders medyası — Video, ses kaydı veya TTS */}
+      <AudioUploader
+        lessonId={lesson?.id}
+        onChange={setSesKaydi}
+        onVideoChange={setVideoKaydi}
+      />
 
       {/* ── Yanlış İşaretleme & 5 Şıklı Soru Formu ── */}
       <AnimatePresence>

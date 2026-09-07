@@ -88,7 +88,7 @@ export default function AmfiPlayV2({ sessionId, participantId, onLeave }: Props)
   const acik = session?.phase === 'speaking' || session?.phase === 'grace'
   /** İşlenmemiş bir basışı varken tekrar basmasın */
   const bekleyenBasis = mine.some((c) => c.status === 'pending')
-  const basabilir = Boolean(acik && !busy && !bekleyenBasis && !bekleyenSoru)
+  const basabilir = Boolean(acik && !session?.isPaused && !busy && !bekleyenBasis && !bekleyenSoru)
 
   const bas = async () => {
     if (!session || !basabilir) return
@@ -321,16 +321,22 @@ export default function AmfiPlayV2({ sessionId, participantId, onLeave }: Props)
             )}
           >
             <span className="text-[44px] leading-none sm:text-[56px]">
-              {bekleyenBasis ? 'GÖNDERİLDİ' : 'HATA VAR'}
+              {session.isPaused
+                ? 'DURAKLATILDI'
+                : bekleyenBasis
+                  ? 'GÖNDERİLDİ'
+                  : 'HATA VAR'}
             </span>
             <span className="font-sans text-sm font-normal opacity-80">
-              {basabilir
-                ? 'Hatayı duyduğun an bas'
-                : bekleyenBasis
-                  ? 'Kontrol ediliyor…'
-                  : session.phase === 'lobby'
-                    ? 'Ders başlamak üzere'
-                    : 'Ders bitiyor'}
+              {session.isPaused
+                ? '⏸️ Hoca akışı duraklattı — Açıklamayı dinle'
+                : basabilir
+                  ? 'Hatayı duyduğun an bas'
+                  : bekleyenBasis
+                    ? 'Kontrol ediliyor…'
+                    : session.phase === 'lobby'
+                      ? 'Ders başlamak üzere'
+                      : 'Ders bitiyor'}
             </span>
           </motion.button>
         )}
@@ -348,16 +354,18 @@ export default function AmfiPlayV2({ sessionId, participantId, onLeave }: Props)
       <p
         className={cx(
           'rounded-sm border-l-4 px-4 py-2.5 text-center font-mono text-[11px] font-bold uppercase tracking-[0.16em]',
-          session.phase === 'speaking' && 'border-l-mark bg-mark-soft text-mark',
-          session.phase === 'grace' && 'border-l-flag bg-flag-soft text-flag',
-          session.phase === 'lobby' && 'border-l-paper-edge bg-paper-deep text-ink-muted',
-          session.phase === 'reveal' && 'border-l-ink bg-paper-deep text-ink',
+          session.isPaused && 'border-l-flag bg-flag-soft text-flag animate-pulse',
+          !session.isPaused && session.phase === 'speaking' && 'border-l-mark bg-mark-soft text-mark',
+          !session.isPaused && session.phase === 'grace' && 'border-l-flag bg-flag-soft text-flag',
+          !session.isPaused && session.phase === 'lobby' && 'border-l-paper-edge bg-paper-deep text-ink-muted',
+          !session.isPaused && session.phase === 'reveal' && 'border-l-ink bg-paper-deep text-ink',
         )}
       >
-        {session.phase === 'lobby' && 'KATILIM ALINDI · BEKLE'}
-        {session.phase === 'speaking' && '● DİNLE'}
-        {session.phase === 'grace' && '● SON SANİYELER'}
-        {session.phase === 'reveal' && '■ BEKLE'}
+        {session.isPaused && '⏸️ AKIŞ DURAKLATILDI · HOCAYI DİNLEYİN'}
+        {!session.isPaused && session.phase === 'lobby' && 'KATILIM ALINDI · BEKLE'}
+        {!session.isPaused && session.phase === 'speaking' && '● DİNLE'}
+        {!session.isPaused && session.phase === 'grace' && '● SON SANİYELER'}
+        {!session.isPaused && session.phase === 'reveal' && '■ BEKLE'}
       </p>
     </div>
   )

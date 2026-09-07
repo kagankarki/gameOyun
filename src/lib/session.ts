@@ -40,6 +40,7 @@ import type {
   QuizQuestion,
   ReadingMode,
   SessionAudio,
+  SessionVideo,
   SessionRating,
   SessionSecret,
   SurveyResponse,
@@ -100,6 +101,8 @@ function hydrate(s: LiveSession): LiveSession {
     posttestCount: s.posttestCount ?? 0,
     activeQuiz: s.activeQuiz ?? null,
     audio: s.audio ?? null,
+    video: s.video ?? null,
+    isPaused: s.isPaused ?? false,
   }
 }
 
@@ -132,6 +135,8 @@ export interface SessionOptions {
   posttest?: QuizQuestion[]
   /** Hocanın yüklediği ses kaydının künyesi (dosya cihazda kalır) */
   audio?: SessionAudio | null
+  /** Hocanın yüklediği video kaydının künyesi (dosya cihazda kalır) */
+  video?: SessionVideo | null
 }
 
 export async function createSession(
@@ -166,11 +171,14 @@ export async function createSession(
     posttestCount: posttest.length,
     activeQuiz: null,
     audio: opts.audio ?? null,
+    video: opts.video ?? null,
+    isPaused: false,
     scriptLength: script.length,
     currentBlockIndex: 0,
     blockStartedAt: 0,
     blockDurationMs: 0,
-    blockEstimateMs: opts.audio?.durationMs || (script ? estimateReadMs(script) : 0),
+    blockEstimateMs:
+      opts.video?.durationMs || opts.audio?.durationMs || (script ? estimateReadMs(script) : 0),
     graceEndsAt: 0,
     createdAt: now,
     updatedAt: now,
@@ -277,6 +285,17 @@ export async function saveSession(s: LiveSession): Promise<void> {
     return
   }
   store.putLiveSession(payload)
+}
+
+/** Hoca akışı duraklattığında veya devam ettirdiğinde çağrılır */
+export async function setSessionPause(s: LiveSession, isPaused: boolean): Promise<LiveSession> {
+  const updated: LiveSession = {
+    ...s,
+    isPaused,
+    updatedAt: Date.now(),
+  }
+  await saveSession(updated)
+  return updated
 }
 
 /** Koddan oturum bulur (öğrenci katılırken) */

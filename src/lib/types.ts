@@ -128,6 +128,12 @@ export interface LiveSession {
    * Doluysa metin bu ses kaydına göre ilerler.
    */
   audio: SessionAudio | null
+  /**
+   * Derse ait yerel video (MP4, WebM vb.). Dosya hocanın cihazında kalır.
+   */
+  video?: SessionVideo | null
+  /** Hoca canlı akışı duraklattı mı? */
+  isPaused?: boolean
   /** Ön testte kaç soru var (0 = ön test yok) */
   pretestCount: number
   /** Son testte kaç soru var (0 = son test yok) */
@@ -169,6 +175,18 @@ export interface SessionAudio {
   /** Kaydın uzunluğu (ms) — 0 ise okunamamış */
   durationMs: number
   size: number
+}
+
+/**
+ * Hocanın yüklediği video kaydının künyesi. Dosyanın kendisi hocanın cihazında kalır.
+ */
+export interface SessionVideo {
+  name: string
+  /** Video uzunluğu (ms) — 0 ise okunamamış */
+  durationMs: number
+  size: number
+  /** Videonun kendi ses kanalı var mı ve dinlenecek mi? */
+  hasAudio: boolean
 }
 
 /* ══════════════════════════════════════════════════════════

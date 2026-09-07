@@ -33,8 +33,17 @@ import {
   isSpeechSupported,
   playAudioFile,
   speak,
+  type SpeakHandle,
 } from '@/lib/speech'
-import { sesGetir, sesKaydet, sureMetni, type DersSesi } from '@/lib/audioStore'
+import {
+  sesGetir,
+  sesKaydet,
+  sureMetni,
+  videoGetir,
+  videoKaydet,
+  type DersSesi,
+  type DersVideosu,
+} from '@/lib/audioStore'
 import type {
   Catch,
   Lesson,
@@ -154,15 +163,22 @@ export default function AmfiHostV2() {
   const [charIndex, setCharIndex] = useState(0)
   /** Hocanın yüklediği ders kaydı — bu cihazda duruyor */
   const [sesKaydi, setSesKaydi] = useState<DersSesi | null>(null)
+  /** Hocanın yüklediği video kaydı — bu cihazda duruyor */
+  const [videoKaydi, setVideoKaydi] = useState<DersVideosu | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const sesInputRef = useRef<HTMLInputElement>(null)
+  const videoInputRef = useRef<HTMLInputElement>(null)
   const [loading, setLoading] = useState(true)
+  const [isPaused, setIsPaused] = useState(false)
+  const isPausedRef = useRef(false)
 
   /* Kapanışlarda bayatlamasın diye canlı referanslar */
   const sessionRef = useRef<LiveSession | null>(null)
   const secretRef = useRef<SessionSecret | null>(null)
   const partsRef = useRef<Participant[]>([])
   const catchesRef = useRef<Catch[]>([])
-  const speakRef = useRef<{ cancel: () => void } | null>(null)
+  const speakRef = useRef<SpeakHandle | null>(null)
 
   /** (an, karakter) çizelgesi — basışları metne eşlemek için */
   const marksRef = useRef<ses.SpeechMark[]>([])
@@ -257,16 +273,39 @@ export default function AmfiHostV2() {
     }
   }, [sessionId])
 
-  /* ── Bu ders için yüklenmiş kayıt bu cihazda var mı? ── */
+  /* ── Bu ders için yüklenmiş video ve ses bu cihazda var mı? ── */
   useEffect(() => {
     const dersId = lessonId || session?.lessonId
     if (!dersId) return
     let alive = true
-    void sesGetir(dersId).then((k) => alive && setSesKaydi(k))
+    void Promise.all([sesGetir(dersId), videoGetir(dersId)]).then(([s, v]) => {
+      if (!alive) return
+      setSesKaydi(s)
+      setVideoKaydi(v)
+    })
     return () => {
       alive = false
     }
   }, [lessonId, session?.lessonId])
+
+  /* ── Video blob URL ── */
+  useEffect(() => {
+    if (!videoKaydi) {
+      setVideoUrl(null)
+      return
+    }
+    const u = URL.createObjectURL(videoKaydi.blob)
+    setVideoUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [videoKaydi])
+
+  /* ── Oturumdan gelen isPaused durumunu eşle ── */
+  useEffect(() => {
+    if (session?.isPaused !== undefined) {
+      setIsPaused(session.isPaused)
+      isPausedRef.current = session.isPaused
+    }
+  }, [session?.isPaused])
 
   /* ── Türkçe ses ── */
   useEffect(() => {
@@ -284,14 +323,63 @@ export default function AmfiHostV2() {
     })
   }, [])
 
-  /* ── Sayfadan ayrılırken sesi kes ── */
+  /* ── Sayfadan ayrılırken sesi ve videoyu kes ── */
   useEffect(
     () => () => {
       speakRef.current?.cancel()
+      if (videoRef.current) {
+        videoRef.current.pause()
+        videoRef.current.currentTime = 0
+      }
       cancelSpeech()
     },
     [],
   )
+
+  /* ── Akışı Duraklat / Devam Et ── */
+  const durdurVeyaDevamEt = useCallback(async () => {
+    const s = sessionRef.current
+    if (!s || (s.phase !== 'speaking' && s.phase !== 'grace')) return
+
+    const yeniDurum = !isPausedRef.current
+    setIsPaused(yeniDurum)
+    isPausedRef.current = yeniDurum
+
+    if (yeniDurum) {
+      speakRef.current?.pause?.()
+      videoRef.current?.pause()
+    } else {
+      speakRef.current?.resume?.()
+      void videoRef.current?.play()
+    }
+
+    try {
+      await ses.setSessionPause(s, yeniDurum)
+      toast(
+        yeniDurum
+          ? '⏸️ Akış duraklatıldı — Öğrencilere açıklama yapabilirsiniz.'
+          : '▶️ Akış devam ediyor.',
+        'info',
+      )
+    } catch (err) {
+      console.error('Duraklatma hatası:', err)
+    }
+  }, [toast])
+
+  /* Boşluk tuşu ile duraklat / devam et */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return
+      const tag = (e.target as HTMLElement)?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      const s = sessionRef.current
+      if (!s || (s.phase !== 'speaking' && s.phase !== 'grace')) return
+      e.preventDefault()
+      void durdurVeyaDevamEt()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [durdurVeyaDevamEt])
 
   /* ── Okumayı başlat ── */
   const basla = useCallback(() => {
@@ -305,15 +393,16 @@ export default function AmfiHostV2() {
 
     marksRef.current = []
     setCharIndex(0)
+    setIsPaused(false)
+    isPausedRef.current = false
 
     /**
-     * Ortak geri çağrılar: dersi TTS mi okuyor yoksa hocanın kaydı mı
-     * çalıyor, aşağısı için fark etmiyor — ikisi de (an, karakter)
+     * Ortak geri çağrılar: dersi TTS mi okuyor, video mu yoksa hocanın kaydı mı
+     * çalıyor, aşağısı için fark etmiyor — hepsi (an, karakter)
      * çizelgesini aynı şekilde besliyor.
      */
     const kancalar = {
       onStart: () => {
-        // Pencere TAM BURADA açılır — speak() ile ses arasında ~1 sn var
         const t = Date.now()
         marksRef.current = [{ t, i: 0 }]
         const cur = sessionRef.current
@@ -321,6 +410,7 @@ export default function AmfiHostV2() {
           void ses.saveSession({
             ...cur,
             phase: 'speaking' as const,
+            isPaused: false,
             blockStartedAt: t,
             blockDurationMs: 0,
           })
@@ -333,8 +423,6 @@ export default function AmfiHostV2() {
       onEnd: async () => {
         const s2 = sessionRef.current
         if (!s2) return
-        // Okuma bitti ama son hatanın penceresi hâlâ açık olabilir —
-        // basışlar işlensin diye biraz bekleyip bitiriyoruz.
         await ses.saveSession({
           ...s2,
           phase: 'grace' as const,
@@ -344,7 +432,128 @@ export default function AmfiHostV2() {
       onError: (m: string) => toast(m, 'error'),
     }
 
-    /* Oturum bir ses kaydıyla açıldıysa dersi o kayıt anlatır. */
+    /* 1. Oturum video ile açıldıysa */
+    if (s.video) {
+      if (!videoKaydi) {
+        toast(
+          `Bu oturum “${s.video.name}” videosuyla açılmış ama dosya bu cihazda yok. Aşağıdan video dosyasını seçin.`,
+          'error',
+        )
+        return
+      }
+
+      const v = videoRef.current
+      if (!v) {
+        toast('Video oynatıcı henüz hazır değil, lütfen sayfayı yenileyin.', 'error')
+        return
+      }
+
+      // 1A: Videonun kendi sesi var
+      if (s.video.hasAudio) {
+        v.muted = false
+        v.currentTime = 0
+
+        const onTimeUpdate = () => {
+          if (isPausedRef.current) return
+          const dur = v.duration
+          if (Number.isFinite(dur) && dur > 0) {
+            const oran = Math.min(1, v.currentTime / dur)
+            const idx = Math.floor(oran * sec.script.length)
+            kancalar.onBoundary(idx)
+          }
+        }
+
+        const onEnded = () => {
+          v.removeEventListener('timeupdate', onTimeUpdate)
+          v.removeEventListener('ended', onEnded)
+          kancalar.onBoundary(sec.script.length)
+          void kancalar.onEnd()
+        }
+
+        v.addEventListener('timeupdate', onTimeUpdate)
+        v.addEventListener('ended', onEnded)
+
+        kancalar.onStart()
+
+        speakRef.current = {
+          cancel: () => {
+            v.removeEventListener('timeupdate', onTimeUpdate)
+            v.removeEventListener('ended', onEnded)
+            v.pause()
+            v.currentTime = 0
+          },
+          pause: () => v.pause(),
+          resume: () => void v.play(),
+          isPaused: () => v.paused,
+        }
+
+        v.play().catch((err) => {
+          console.error('Video başlatılamadı:', err)
+          toast('Video başlatılamadı: ' + (err as Error).message, 'error')
+        })
+        return
+      }
+
+      // 1B: Video sessiz — Harici ses dosyası ile senkron oynat
+      if (s.audio) {
+        if (!sesKaydi) {
+          toast(
+            `Bu oturum “${s.audio.name}” ses kaydıyla açılmış ama dosya bu cihazda yok. Aşağıdan ses dosyasını seçin.`,
+            'error',
+          )
+          return
+        }
+
+        v.muted = true
+        v.currentTime = 0
+        void v.play().catch(() => {})
+
+        const audioHandle = playAudioFile(sesKaydi.blob, sec.script.length, kancalar)
+        speakRef.current = {
+          cancel: () => {
+            audioHandle.cancel()
+            v.pause()
+            v.currentTime = 0
+          },
+          pause: () => {
+            audioHandle.pause?.()
+            v.pause()
+          },
+          resume: () => {
+            audioHandle.resume?.()
+            void v.play()
+          },
+          isPaused: () => audioHandle.isPaused?.() ?? v.paused,
+        }
+        return
+      }
+
+      // 1C: Video sessiz — TTS ile senkron oynat
+      v.muted = true
+      v.currentTime = 0
+      void v.play().catch(() => {})
+
+      const ttsHandle = speak(sec.script, voice, kancalar)
+      speakRef.current = {
+        cancel: () => {
+          ttsHandle.cancel()
+          v.pause()
+          v.currentTime = 0
+        },
+        pause: () => {
+          ttsHandle.pause?.()
+          v.pause()
+        },
+        resume: () => {
+          ttsHandle.resume?.()
+          void v.play()
+        },
+        isPaused: () => ttsHandle.isPaused?.() ?? v.paused,
+      }
+      return
+    }
+
+    /* 2. Sadece ses kaydıyla açıldıysa */
     if (s.audio) {
       if (!sesKaydi) {
         toast(
@@ -358,8 +567,9 @@ export default function AmfiHostV2() {
       return
     }
 
+    /* 3. Yapay zeka sesi */
     speakRef.current = speak(sec.script, voice, kancalar)
-  }, [participants.length, voice, toast, sesKaydi])
+  }, [participants.length, voice, toast, sesKaydi, videoKaydi])
 
   /* ── Gelen basışları çöz ── */
   useEffect(() => {
@@ -470,6 +680,22 @@ export default function AmfiHostV2() {
     }
   }
 
+  /** Oturum bir videoyla açıldı ama dosya bu cihazda yoksa yeniden seçtir. */
+  const videoyuYenidenSec = async (file: File | undefined) => {
+    const dersId = lessonId || sessionRef.current?.lessonId
+    if (!file || !dersId) return
+    const hasAudio = sessionRef.current?.video?.hasAudio ?? true
+    try {
+      const v = await videoKaydet(dersId, file, hasAudio)
+      setVideoKaydi(v)
+      toast('Video kaydı bu cihaza alındı. Artık dersi başlatabilirsiniz.', 'success')
+    } catch (err) {
+      toast('Video kaydedilemedi: ' + (err as Error).message, 'error')
+    } finally {
+      if (videoInputRef.current) videoInputRef.current.value = ''
+    }
+  }
+
   const testiBaslat = async (kind: QuizKind) => {
     const s = sessionRef.current
     const sec = secretRef.current
@@ -541,6 +767,10 @@ export default function AmfiHostV2() {
       return
 
     speakRef.current?.cancel()
+    if (videoRef.current) {
+      videoRef.current.pause()
+      videoRef.current.currentTime = 0
+    }
     cancelSpeech()
     await queue.current
     await ses.markMissedWrongs(s.wrongCount, partsRef.current, catchesRef.current)
@@ -734,15 +964,48 @@ export default function AmfiHostV2() {
               </div>
             )}
 
-            {/* Ders neyle anlatılacak? */}
-            {session.audio && (
+            {/* Ders neyle anlatılacak? — Video veya Ses */}
+            {session.video && (
               <div
                 className={cx(
                   'mt-5 rounded-sm border-l-4 p-4',
+                  videoKaydi ? 'border-l-verify bg-verify-soft' : 'border-l-mark bg-mark-soft',
+                )}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-base">🎬</span>
+                  <p className="label font-bold text-ink">DERS VİDEOYLA ANLATILACAK</p>
+                </div>
+                <p className="mt-1 text-sm font-semibold text-ink">
+                  {session.video.name} · {sureMetni(session.video.durationMs)} ·{' '}
+                  {session.video.hasAudio ? '🔊 Kendi Sesiyle' : '🔇 Sessiz Video'}
+                </p>
+                {!videoKaydi && (
+                  <div className="mt-3">
+                    <p className="text-sm leading-relaxed text-ink">
+                      Video dosyası <strong className="font-semibold">bu cihazda bulunamadı</strong> —
+                      dosya hocanın bilgisayarında saklanıyor. Lütfen aşağıdan video dosyasını seçin:
+                    </p>
+                    <div className="mt-3">
+                      <Button3D size="sm" onClick={() => videoInputRef.current?.click()}>
+                        🎬 Video Dosyasını Seç
+                      </Button3D>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {session.audio && (
+              <div
+                className={cx(
+                  'mt-4 rounded-sm border-l-4 p-4',
                   sesKaydi ? 'border-l-verify bg-verify-soft' : 'border-l-mark bg-mark-soft',
                 )}
               >
-                <p className="label font-bold">DERS SES KAYDIYLA ANLATILACAK</p>
+                <p className="label font-bold">
+                  {session.video ? 'EKSTRA HARİCİ SES KAYDI' : 'DERS SES KAYDIYLA ANLATILACAK'}
+                </p>
                 <p className="mt-2 text-sm leading-relaxed text-ink">
                   {session.audio.name} · {sureMetni(session.audio.durationMs)}
                 </p>
@@ -764,6 +1027,13 @@ export default function AmfiHostV2() {
             )}
 
             <input
+              ref={videoInputRef}
+              type="file"
+              accept="video/*,.mp4,.webm,.mov,.mkv,.m4v"
+              className="hidden"
+              onChange={(e) => void videoyuYenidenSec(e.target.files?.[0])}
+            />
+            <input
               ref={sesInputRef}
               type="file"
               accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac"
@@ -771,47 +1041,58 @@ export default function AmfiHostV2() {
               onChange={(e) => void sesiYenidenSec(e.target.files?.[0])}
             />
 
-            <div className="mt-auto flex flex-wrap gap-3 pt-8">
-              {onTestSorulari.length > 0 && !onTestBitti ? (
-                <>
-                  <Button3D
-                    size="lg"
-                    tone="gold"
-                    onClick={() => testiBaslat('pre')}
-                    disabled={!participants.length}
-                  >
-                    📝 1. Aşama: Ön Testi Başlat
+            {/* Dersi Başlatma Butonları */}
+            {(() => {
+              const baslatDevreDisi =
+                (session.video ? !videoKaydi : false) ||
+                (session.audio ? !sesKaydi : false) ||
+                (!session.video && !session.audio && Boolean(voiceError)) ||
+                !script
+
+              return (
+                <div className="mt-auto flex flex-wrap gap-3 pt-8">
+                  {onTestSorulari.length > 0 && !onTestBitti ? (
+                    <>
+                      <Button3D
+                        size="lg"
+                        tone="gold"
+                        onClick={() => testiBaslat('pre')}
+                        disabled={!participants.length}
+                      >
+                        📝 1. Aşama: Ön Testi Başlat
+                      </Button3D>
+                      <Button3D
+                        size="lg"
+                        tone="ghost"
+                        onClick={basla}
+                        disabled={baslatDevreDisi}
+                      >
+                        🎙️ Ön Testi Atla · Dersi Başlat
+                      </Button3D>
+                    </>
+                  ) : (
+                    <Button3D
+                      size="lg"
+                      tone="success"
+                      onClick={basla}
+                      disabled={baslatDevreDisi}
+                    >
+                      {onTestBitti
+                        ? '🎙️ 2. Aşama: Canlı Dersi Başlat (Hatayı Yakala)'
+                        : '🎙️ Canlı Dersi Başlat'}
+                    </Button3D>
+                  )}
+                  <Button3D size="lg" tone="ghost" onClick={() => nav('/hoca')}>
+                    Vazgeç
                   </Button3D>
-                  <Button3D
-                    size="lg"
-                    tone="ghost"
-                    onClick={basla}
-                    disabled={session.audio ? !sesKaydi || !script : !!voiceError || !script}
-                  >
-                    🎙️ Ön Testi Atla · Dersi Başlat
-                  </Button3D>
-                </>
-              ) : (
-                <Button3D
-                  size="lg"
-                  tone="success"
-                  onClick={basla}
-                  disabled={session.audio ? !sesKaydi || !script : !!voiceError || !script}
-                >
-                  {onTestBitti
-                    ? '🎙️ 2. Aşama: Canlı Dersi Başlat (Hatayı Yakala)'
-                    : '🎙️ Canlı Dersi Başlat'}
-                </Button3D>
-              )}
-              <Button3D size="lg" tone="ghost" onClick={() => nav('/hoca')}>
-                Vazgeç
-              </Button3D>
-            </div>
+                </div>
+              )
+            })()}
           </div>
         </div>
 
-        {/* Seslendirme & Ton Seçici — ders kayıtla anlatılacaksa gereksiz */}
-        {!session.audio && (
+        {/* Seslendirme & Ton Seçici — ders video veya ses kaydıyla anlatılacaksa gereksiz */}
+        {!session.video && !session.audio && (
           <div className="mt-6">
             <VoiceSelector onSelect={() => getTurkishVoice().then((v) => v && setVoice(v))} />
           </div>
@@ -1053,11 +1334,22 @@ export default function AmfiHostV2() {
         hasPosttest={sonTestSorulari.length > 0}
       />
 
-      {/* Künye */}
+      {/* Künye ve Akış Kontrolü */}
       <div className="file-card mb-5 flex flex-wrap items-center gap-x-6 gap-y-2 px-5 py-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-ink">{session.lessonTitle}</p>
-          <p className="label mt-0.5">KOD {session.code}</p>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <span className="label">KOD {session.code}</span>
+            <Button3D
+              size="sm"
+              tone={isPaused ? 'success' : 'gold'}
+              onClick={durdurVeyaDevamEt}
+              className={cx('font-bold shadow-lift tracking-wide', isPaused && 'animate-pulse')}
+              title="Dersi duraklat veya devam ettir (Klavyeden Boşluk tuşuna da basabilirsiniz)"
+            >
+              {isPaused ? '▶️ Devam Et (Boşluk)' : '⏸️ Duraklat (Boşluk)'}
+            </Button3D>
+          </div>
         </div>
         <div className="ml-auto flex items-center gap-6">
           <div className="text-right">
@@ -1080,6 +1372,33 @@ export default function AmfiHostV2() {
         </div>
       </div>
 
+      {/* Akış Duraklatıldı Bildirim Bandı */}
+      <AnimatePresence>
+        {isPaused && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-sm border-2 border-flag bg-flag-soft p-4 shadow-md"
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-2xl animate-pulse">⏸️</span>
+              <div>
+                <p className="font-display text-base font-bold text-ink">
+                  DERS AKIŞI DURAKLATILDI — Hoca Açıklama Yapıyor
+                </p>
+                <p className="text-xs text-ink-muted">
+                  Öğrencilerin butonları kilitlendi (boşa basma cezası almazlar). Açıklamanız bitince devam ettirebilirsiniz.
+                </p>
+              </div>
+            </div>
+            <Button3D size="sm" tone="success" onClick={durdurVeyaDevamEt}>
+              ▶️ Akışı Devam Ettir (Boşluk)
+            </Button3D>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* İlerleme */}
       <div className="mb-5">
         <div className="h-2 overflow-hidden rounded-full bg-paper-deep">
@@ -1089,12 +1408,39 @@ export default function AmfiHostV2() {
           />
         </div>
         <p className="mt-2 font-mono text-[11px] font-bold uppercase tracking-[0.16em] text-ink-muted">
-          {bitiyor ? '■ OKUMA BİTTİ — SON BASIŞLAR BEKLENİYOR' : `● OKUNUYOR · %${ilerleme}`}
+          {bitiyor ? '■ OKUMA BİTTİ — SON BASIŞLAR BEKLENİYOR' : isPaused ? '⏸️ DURAKLATILDI' : `● OKUNUYOR · %${ilerleme}`}
         </p>
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[1fr_340px]">
         <div className="space-y-5">
+          {/* Video Oynatıcı (Eğer derste video varsa) */}
+          {videoUrl && (
+            <div className="file-card overflow-hidden p-3 bg-black border-2 border-paper-edge shadow-lift">
+              <div className="relative">
+                <video
+                  ref={videoRef}
+                  src={videoUrl}
+                  controls
+                  playsInline
+                  className="max-h-[440px] w-full object-contain mx-auto rounded-xs"
+                  muted={Boolean(session.video && !session.video.hasAudio)}
+                />
+              </div>
+              <div className="mt-2 flex items-center justify-between px-2 pt-1 text-xs text-paper-edge">
+                <div className="flex items-center gap-2">
+                  <span>🎬</span>
+                  <span className="font-semibold text-paper truncate max-w-sm">
+                    {session.video?.name ?? 'Ders Videosu'}
+                  </span>
+                </div>
+                <span className="label text-[10px] text-paper-edge font-mono">
+                  {session.video?.hasAudio ? '🔊 KENDİ SESİYLE' : '🔇 SESSİZ VİDEO'}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Metin — okunan kelime vurgulu */}
           <div className="file-card-tabbed border-l-ink p-8 sm:p-10">
             <p className="font-display text-[26px] leading-[1.5] sm:text-[32px]">

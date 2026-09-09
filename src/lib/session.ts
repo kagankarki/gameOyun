@@ -366,17 +366,58 @@ export async function joinSession(
 ): Promise<Participant> {
   await ensureAuthForJoin()
 
+  const cleanName = name.trim()
+  const normName = cleanName.toLocaleLowerCase('tr-TR')
+
+  let existing: Participant | undefined
+
+  if (live() && firestore) {
+    try {
+      const q = query(
+        collection(firestore, 'participants'),
+        where('sessionId', '==', sessionId),
+      )
+      const snap = await getDocs(q)
+      const list = snap.docs.map((d) => d.data() as Participant)
+      existing = list.find((p) => {
+        if (studentId && p.studentId === studentId) return true
+        return p.name.trim().toLocaleLowerCase('tr-TR') === normName
+      })
+    } catch (err) {
+      console.error('[joinSession] Var olan katılımcı kontrolü yapılamadı:', err)
+    }
+  } else {
+    existing = store.getParticipants().find((p) => {
+      if (p.sessionId !== sessionId) return false
+      if (studentId && p.studentId === studentId) return true
+      return p.name.trim().toLocaleLowerCase('tr-TR') === normName
+    })
+  }
+
+  // Bağlantısı kopup tekrar bağlanan veya aynı isimle giren öğrenciyi tek kayıtta tut
+  if (existing) {
+    const updated: Participant = {
+      ...existing,
+      name: cleanName,
+      ...(studentId ? { studentId } : {}),
+      lastSeenAt: Date.now(),
+    }
+    await saveParticipant(updated)
+    store.setMyJoin({ sessionId, participantId: updated.id })
+    return updated
+  }
+
   const p: Participant = {
     id: uid('p'),
     sessionId,
-    name: name.trim(),
-    // Firestore undefined kabul etmiyor — alanı yalnızca değer varsa koy
+    name: cleanName,
     ...(studentId ? { studentId } : {}),
     score: 0,
     hits: 0,
     misses: 0,
     falseAlarms: 0,
     joinedAt: Date.now(),
+    lastSeenAt: Date.now(),
   }
   await saveParticipant(p)
   store.setMyJoin({ sessionId, participantId: p.id })
@@ -391,18 +432,45 @@ export async function saveParticipant(p: Participant): Promise<void> {
   store.putParticipant(p)
 }
 
+/**
+ * Katılımcı listesindeki mükerrer kayıtları (aynı studentId veya aynı isim) birleştirir
+ */
+export function dedupeParticipants(list: Participant[]): Participant[] {
+  const sortByScore = (a: Participant, b: Participant) =>
+    b.score - a.score || a.joinedAt - b.joinedAt
+
+  const map = new Map<string, Participant>()
+  for (const p of list) {
+    const key = p.studentId || p.name.trim().toLocaleLowerCase('tr-TR')
+    const existing = map.get(key)
+    if (!existing) {
+      map.set(key, { ...p })
+    } else {
+      const merged: Participant = {
+        ...existing,
+        // İki mükerrer kayıt varsa verileri harmanla
+        score: Math.max(existing.score, p.score),
+        hits: Math.max(existing.hits, p.hits),
+        misses: Math.max(existing.misses, p.misses),
+        falseAlarms: Math.max(existing.falseAlarms, p.falseAlarms),
+        joinedAt: Math.min(existing.joinedAt, p.joinedAt),
+        lastSeenAt: Math.max(existing.lastSeenAt ?? existing.joinedAt, p.lastSeenAt ?? p.joinedAt),
+      }
+      map.set(key, merged)
+    }
+  }
+  return Array.from(map.values()).sort(sortByScore)
+}
+
 export function watchParticipants(
   sessionId: string,
   cb: (list: Participant[]) => void,
 ): () => void {
-  const sortByScore = (a: Participant, b: Participant) =>
-    b.score - a.score || a.joinedAt - b.joinedAt
-
   if (live()) {
     const q = query(collection(firestore!, 'participants'), where('sessionId', '==', sessionId))
     return onSnapshot(
       q,
-      (snap) => cb(snap.docs.map((d) => d.data() as Participant).sort(sortByScore)),
+      (snap) => cb(dedupeParticipants(snap.docs.map((d) => d.data() as Participant))),
       (err) => {
         console.error('[participants] dinlenemedi:', err)
         cb([])
@@ -410,7 +478,7 @@ export function watchParticipants(
     )
   }
   const emit = () =>
-    cb(store.getParticipants().filter((p) => p.sessionId === sessionId).sort(sortByScore))
+    cb(dedupeParticipants(store.getParticipants().filter((p) => p.sessionId === sessionId)))
   emit()
   return store.subscribe(emit)
 }
@@ -425,14 +493,14 @@ export function watchAllParticipants(cb: (list: Participant[]) => void): () => v
   if (live()) {
     return onSnapshot(
       collection(firestore!, 'participants'),
-      (snap) => cb(snap.docs.map((d) => d.data() as Participant)),
+      (snap) => cb(dedupeParticipants(snap.docs.map((d) => d.data() as Participant))),
       (err) => {
         console.error('[participants] dinlenemedi:', err)
         cb([])
       },
     )
   }
-  const emit = () => cb(store.getParticipants())
+  const emit = () => cb(dedupeParticipants(store.getParticipants()))
   emit()
   return store.subscribe(emit)
 }

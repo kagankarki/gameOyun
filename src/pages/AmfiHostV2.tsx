@@ -381,71 +381,44 @@ export default function AmfiHostV2() {
     return () => window.removeEventListener('keydown', onKey)
   }, [durdurVeyaDevamEt])
 
-  /* ── Okumayı başlat ── */
-  const basla = useCallback(() => {
-    const s = sessionRef.current
-    const sec = secretRef.current
-    if (!s || !sec?.script) return
-    if (!participants.length) {
-      toast('Henüz kimse katılmadı.', 'error')
-      return
-    }
+  /**
+   * Video oynatıcısını başlatır (DOM'da <video ref={videoRef}> mounted olduktan sonra çalışır)
+   */
+  const baslatVideo = useCallback(
+    (v: HTMLVideoElement) => {
+      const s = sessionRef.current
+      const sec = secretRef.current
+      if (!s || !sec?.script || !s.video) return
 
-    marksRef.current = []
-    setCharIndex(0)
-    setIsPaused(false)
-    isPausedRef.current = false
-
-    /**
-     * Ortak geri çağrılar: dersi TTS mi okuyor, video mu yoksa hocanın kaydı mı
-     * çalıyor, aşağısı için fark etmiyor — hepsi (an, karakter)
-     * çizelgesini aynı şekilde besliyor.
-     */
-    const kancalar = {
-      onStart: () => {
-        const t = Date.now()
-        marksRef.current = [{ t, i: 0 }]
-        const cur = sessionRef.current
-        if (cur) {
-          void ses.saveSession({
-            ...cur,
-            phase: 'speaking' as const,
-            isPaused: false,
-            blockStartedAt: t,
-            blockDurationMs: 0,
+      const kancalar = {
+        onStart: () => {
+          const t = Date.now()
+          marksRef.current = [{ t, i: 0 }]
+          const cur = sessionRef.current
+          if (cur) {
+            void ses.saveSession({
+              ...cur,
+              phase: 'speaking' as const,
+              isPaused: false,
+              blockStartedAt: t,
+              blockDurationMs: 0,
+            })
+          }
+        },
+        onBoundary: (i: number) => {
+          marksRef.current.push({ t: Date.now(), i })
+          setCharIndex(i)
+        },
+        onEnd: async () => {
+          const s2 = sessionRef.current
+          if (!s2) return
+          await ses.saveSession({
+            ...s2,
+            phase: 'grace' as const,
+            blockDurationMs: Date.now() - s2.blockStartedAt,
           })
-        }
-      },
-      onBoundary: (i: number) => {
-        marksRef.current.push({ t: Date.now(), i })
-        setCharIndex(i)
-      },
-      onEnd: async () => {
-        const s2 = sessionRef.current
-        if (!s2) return
-        await ses.saveSession({
-          ...s2,
-          phase: 'grace' as const,
-          blockDurationMs: Date.now() - s2.blockStartedAt,
-        })
-      },
-      onError: (m: string) => toast(m, 'error'),
-    }
-
-    /* 1. Oturum video ile açıldıysa */
-    if (s.video) {
-      if (!videoKaydi) {
-        toast(
-          `Bu oturum “${s.video.name}” videosuyla açılmış ama dosya bu cihazda yok. Aşağıdan video dosyasını seçin.`,
-          'error',
-        )
-        return
-      }
-
-      const v = videoRef.current
-      if (!v) {
-        toast('Video oynatıcı henüz hazır değil, lütfen sayfayı yenileyin.', 'error')
-        return
+        },
+        onError: (m: string) => toast(m, 'error'),
       }
 
       // 1A: Videonun kendi sesi var
@@ -508,6 +481,8 @@ export default function AmfiHostV2() {
         v.currentTime = 0
         void v.play().catch(() => {})
 
+        kancalar.onStart()
+
         const audioHandle = playAudioFile(sesKaydi.blob, sec.script.length, kancalar)
         speakRef.current = {
           cancel: () => {
@@ -533,6 +508,8 @@ export default function AmfiHostV2() {
       v.currentTime = 0
       void v.play().catch(() => {})
 
+      kancalar.onStart()
+
       const ttsHandle = speak(sec.script, voice, kancalar)
       speakRef.current = {
         cancel: () => {
@@ -549,6 +526,74 @@ export default function AmfiHostV2() {
           void v.play()
         },
         isPaused: () => ttsHandle.isPaused?.() ?? v.paused,
+      }
+    },
+    [voice, sesKaydi, toast],
+  )
+
+  /* ── Okumayı başlat ── */
+  const basla = useCallback(() => {
+    const s = sessionRef.current
+    const sec = secretRef.current
+    if (!s || !sec?.script) return
+    if (!participants.length) {
+      toast('Henüz kimse katılmadı.', 'error')
+      return
+    }
+
+    marksRef.current = []
+    setCharIndex(0)
+    setIsPaused(false)
+    isPausedRef.current = false
+
+    const kancalar = {
+      onStart: () => {
+        const t = Date.now()
+        marksRef.current = [{ t, i: 0 }]
+        const cur = sessionRef.current
+        if (cur) {
+          void ses.saveSession({
+            ...cur,
+            phase: 'speaking' as const,
+            isPaused: false,
+            blockStartedAt: t,
+            blockDurationMs: 0,
+          })
+        }
+      },
+      onBoundary: (i: number) => {
+        marksRef.current.push({ t: Date.now(), i })
+        setCharIndex(i)
+      },
+      onEnd: async () => {
+        const s2 = sessionRef.current
+        if (!s2) return
+        await ses.saveSession({
+          ...s2,
+          phase: 'grace' as const,
+          blockDurationMs: Date.now() - s2.blockStartedAt,
+        })
+      },
+      onError: (m: string) => toast(m, 'error'),
+    }
+
+    /* 1. Oturum video ile açıldıysa */
+    if (s.video) {
+      if (!videoKaydi) {
+        toast(
+          `Bu oturum “${s.video.name}” videosuyla açılmış ama dosya bu cihazda yok. Aşağıdan video dosyasını seçin.`,
+          'error',
+        )
+        return
+      }
+
+      const v = videoRef.current
+      if (v) {
+        baslatVideo(v)
+      } else {
+        // Lobi ekranındayız, <video> elemanı henüz DOM'da yok.
+        // Önce fazı 'speaking' yapıyoruz. OKUMA ekranı render edilip <video> DOM'a eklenince useEffect videoyu başlatacak.
+        kancalar.onStart()
       }
       return
     }
@@ -569,7 +614,19 @@ export default function AmfiHostV2() {
 
     /* 3. Yapay zeka sesi */
     speakRef.current = speak(sec.script, voice, kancalar)
-  }, [participants.length, voice, toast, sesKaydi, videoKaydi])
+  }, [participants.length, voice, toast, sesKaydi, videoKaydi, baslatVideo])
+
+  /* ── Faz 'speaking' olunca video elemanı DOM'a girerse videoyu başlat ── */
+  useEffect(() => {
+    if (
+      session?.phase === 'speaking' &&
+      session.video &&
+      videoRef.current &&
+      !speakRef.current
+    ) {
+      baslatVideo(videoRef.current)
+    }
+  }, [session?.phase, session?.video, baslatVideo])
 
   /* ── Gelen basışları çöz ── */
   useEffect(() => {
@@ -980,6 +1037,16 @@ export default function AmfiHostV2() {
                   {session.video.name} · {sureMetni(session.video.durationMs)} ·{' '}
                   {session.video.hasAudio ? '🔊 Kendi Sesiyle' : '🔇 Sessiz Video'}
                 </p>
+                {videoUrl && (
+                  <div className="mt-3 overflow-hidden rounded border border-paper-edge bg-black p-1">
+                    <video
+                      src={videoUrl}
+                      controls
+                      playsInline
+                      className="max-h-48 w-full object-contain mx-auto rounded-xs"
+                    />
+                  </div>
+                )}
                 {!videoKaydi && (
                   <div className="mt-3">
                     <p className="text-sm leading-relaxed text-ink">

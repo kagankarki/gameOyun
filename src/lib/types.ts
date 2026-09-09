@@ -309,6 +309,7 @@ export interface Participant {
   misses: number
   falseAlarms: number
   joinedAt: number
+  lastSeenAt?: number
 }
 
 /**

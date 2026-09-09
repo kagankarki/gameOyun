@@ -86,7 +86,7 @@ export default function AmfiJoin() {
 
     const key = code.trim().toLocaleUpperCase('tr-TR')
     if (key.length < 4) return setError('Katılım kodunu gir.')
-    if (!name.trim()) return setError('Adını gir — sıralamada bu görünecek.')
+    if (!name.trim()) return setError('Kullanıcı adını gir — sıralamada bu görünecek.')
 
     setBusy(true)
     try {
@@ -183,7 +183,7 @@ export default function AmfiJoin() {
 
               <div>
                 <label className="field-label" htmlFor="name">
-                  ADIN
+                  KULLANICI ADIN
                 </label>
                 <input
                   id="name"
@@ -193,8 +193,8 @@ export default function AmfiJoin() {
                     setNameTouched(true)
                     setName(e.target.value)
                   }}
-                  placeholder="Ayşe Yılmaz"
-                  autoComplete="name"
+                  placeholder="@kullaniciadi"
+                  autoComplete="username"
                 />
               </div>
 

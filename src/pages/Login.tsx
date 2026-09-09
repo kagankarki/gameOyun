@@ -185,15 +185,15 @@ export default function Login() {
 
                   <div>
                     <label className="field-label" htmlFor="name">
-                      AD SOYAD
+                      AD / KULLANICI ADI
                     </label>
                     <input
                       id="name"
                       className="field"
-                      placeholder="Ayşe Yılmaz"
+                      placeholder="@kullaniciadi"
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      autoComplete="name"
+                      autoComplete="username"
                     />
                   </div>
                 </>

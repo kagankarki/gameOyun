@@ -913,7 +913,7 @@ export default function AmfiHostV2() {
               {session.lessonTitle}
             </h1>
           </div>
-          {isElevenLabsConfigured() && !session.audio && (
+          {isElevenLabsConfigured() && !session.video && !session.audio && (
             <div className="flex items-center gap-2 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-1.5 text-xs font-semibold text-emerald-800">
               <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
               ElevenLabs Doğal AI Seslendirme Aktif
@@ -922,7 +922,7 @@ export default function AmfiHostV2() {
         </div>
         <div className="rule mt-7" />
 
-        {voiceError && !session.audio && (
+        {voiceError && !session.video && !session.audio && (
           <div className="mt-6 rounded-sm border-l-2 border-mark bg-mark-soft p-4 text-sm leading-relaxed text-ink">
             <strong className="font-semibold">Ses sorunu:</strong> {voiceError}
           </div>

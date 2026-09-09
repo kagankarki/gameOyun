@@ -558,6 +558,11 @@ export default function LessonEditor() {
       {/* ── 2. AŞAMA: DERS METNİ & HATAYI YAKALAMA ALANI ── */}
       {activeTab === 'content' && (
         <>
+          <AudioUploader
+            lessonId={lesson.id}
+            onChange={setSesKaydi}
+            onVideoChange={setVideoKaydi}
+          />
 
       {/* ── Kesintisiz Ders Notu Alanı ── */}
       <div className="file-card space-y-3 p-6">

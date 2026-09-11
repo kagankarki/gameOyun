@@ -91,7 +91,6 @@ export default function AmfiSetup() {
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [videoCurrentTime, setVideoCurrentTime] = useState<number>(0)
   const [videoTimeInput, setVideoTimeInput] = useState<string>('00:00')
-  const [videoEndInput, setVideoEndInput] = useState<string>('')
   const [videoText, setVideoText] = useState<string>('')
 
   /** Metin düzenlenirken yeri bulunamayıp düşen işaretler */
@@ -205,7 +204,6 @@ export default function AmfiSetup() {
     setSoruAcik(false)
     setZorluk('orta')
     setVideoText('')
-    setVideoEndInput('')
   }
 
   const saniyeyiAl = () => {
@@ -257,7 +255,6 @@ export default function AmfiSetup() {
     }
 
     const secStart = parseMmSs(videoTimeInput)
-    const secEnd = videoEndInput ? parseMmSs(videoEndInput) : undefined
 
     const sikDolu = soru.options.filter((o) => o.trim()).length
     const followUp =
@@ -282,7 +279,6 @@ export default function AmfiSetup() {
       start: 0,
       end: 0,
       videoTimestamp: secStart,
-      videoEndTimestamp: secEnd,
       difficulty: zorluk,
       ...(followUp ? { followUp } : {}),
     }
@@ -540,7 +536,7 @@ export default function AmfiSetup() {
               </Button3D>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <label className="field-label" htmlFor="setup-v-time">
                   HATA SANİYESİ (DK:SN VEYA SN) <span className="text-mark">*</span>
@@ -553,21 +549,8 @@ export default function AmfiSetup() {
                   placeholder="Örn: 01:25 veya 85"
                 />
                 <p className="mt-1 text-[11px] text-ink-muted">
-                  Seçili: <strong className="text-ink font-mono">{formatSec(parseMmSs(videoTimeInput))}</strong> ({parseMmSs(videoTimeInput)} sn)
+                  Seçili: <strong className="text-ink font-mono">{formatSec(parseMmSs(videoTimeInput))}</strong> ({parseMmSs(videoTimeInput)} sn) · yakalama süresi otomatik <strong className="text-ink">10 sn</strong>
                 </p>
-              </div>
-
-              <div>
-                <label className="field-label" htmlFor="setup-v-end">
-                  BİTİŞ SANİYESİ (İSTEĞE BAĞLI)
-                </label>
-                <input
-                  id="setup-v-end"
-                  value={videoEndInput}
-                  onChange={(e) => setVideoEndInput(e.target.value)}
-                  className="field font-mono text-sm"
-                  placeholder="Örn: 01:30 (boş kalabilir)"
-                />
               </div>
 
               <div>
@@ -1114,8 +1097,7 @@ export default function AmfiSetup() {
                           className="rounded-xs border border-verify bg-verify-soft px-1.5 py-0.5 font-mono text-[11px] font-bold text-verify hover:bg-verify hover:text-white transition-colors"
                           title="Videoda bu saniyeye git"
                         >
-                          ⏱️ {formatSec(w.videoTimestamp)}
-                          {w.videoEndTimestamp ? ` - ${formatSec(w.videoEndTimestamp)}` : ''} ▶
+                          ⏱️ {formatSec(w.videoTimestamp)} (+10 sn) ▶
                         </button>
                       )}
                       <p className="font-serif text-sm font-semibold text-mark">“{w.text}”</p>

@@ -46,7 +46,7 @@ import type {
   SurveyResponse,
   WrongBlock,
 } from './types'
-import { uid } from './utils'
+import { stripUndefined, uid } from './utils'
 
 const live = () => Boolean(isFirebaseConfigured && firestore)
 
@@ -200,7 +200,7 @@ export async function createSession(
 
 export async function saveSessionSecret(secret: SessionSecret): Promise<void> {
   if (live()) {
-    await setDoc(doc(firestore!, 'sessionSecrets', secret.sessionId), secret)
+    await setDoc(doc(firestore!, 'sessionSecrets', secret.sessionId), stripUndefined(secret))
     return
   }
   store.putSessionSecret(secret)
@@ -279,7 +279,7 @@ export async function resumeOrCreateSession(
 }
 
 export async function saveSession(s: LiveSession): Promise<void> {
-  const payload = { ...s, updatedAt: Date.now() }
+  const payload = stripUndefined({ ...s, updatedAt: Date.now() })
   if (live()) {
     await setDoc(doc(firestore!, 'sessions', payload.id), payload)
     return
@@ -426,7 +426,7 @@ export async function joinSession(
 
 export async function saveParticipant(p: Participant): Promise<void> {
   if (live()) {
-    await setDoc(doc(firestore!, 'participants', p.id), p)
+    await setDoc(doc(firestore!, 'participants', p.id), stripUndefined(p))
     return
   }
   store.putParticipant(p)
@@ -590,7 +590,7 @@ export async function sendCatch(
     createdAt: now,
   }
   if (live()) {
-    await setDoc(doc(firestore!, 'catches', c.id), c)
+    await setDoc(doc(firestore!, 'catches', c.id), stripUndefined(c))
   } else {
     store.putCatch(c)
   }
@@ -618,7 +618,7 @@ export function watchCatches(sessionId: string, cb: (list: Catch[]) => void): ()
 
 export async function saveCatch(c: Catch): Promise<void> {
   if (live()) {
-    await setDoc(doc(firestore!, 'catches', c.id), c)
+    await setDoc(doc(firestore!, 'catches', c.id), stripUndefined(c))
     return
   }
   store.putCatch(c)
@@ -963,7 +963,7 @@ export async function submitQuizAnswer(
     submittedAt: Date.now(),
   }
   if (live()) {
-    await setDoc(doc(firestore!, 'quizAnswers', rec.id), rec)
+    await setDoc(doc(firestore!, 'quizAnswers', rec.id), stripUndefined(rec))
   } else {
     store.putQuizAnswer(rec)
   }
@@ -984,7 +984,7 @@ export async function gradeQuizAnswer(
     gradedAt: Date.now(),
   }
   if (live()) {
-    await setDoc(doc(firestore!, 'quizAnswers', graded.id), graded)
+    await setDoc(doc(firestore!, 'quizAnswers', graded.id), stripUndefined(graded))
     return
   }
   store.putQuizAnswer(graded)
@@ -1045,7 +1045,7 @@ export function watchAllQuizAnswers(cb: (list: QuizAnswer[]) => void): () => voi
 
 export async function submitSurvey(r: SurveyResponse): Promise<void> {
   if (live()) {
-    await setDoc(doc(firestore!, 'surveys', r.id), r)
+    await setDoc(doc(firestore!, 'surveys', r.id), stripUndefined(r))
     return
   }
   store.putSurvey(r)
@@ -1091,7 +1091,7 @@ export async function submitRating(
   }
 
   if (live()) {
-    await setDoc(doc(firestore!, 'ratings', rating.id), rating)
+    await setDoc(doc(firestore!, 'ratings', rating.id), stripUndefined(rating))
   } else {
     store.putRating(rating)
   }
@@ -1145,7 +1145,7 @@ export async function sendBuzz(session: LiveSession, participantId: string): Pro
     createdAt: Date.now(),
   }
   if (live()) {
-    await setDoc(doc(firestore!, 'buzzes', b.id), b)
+    await setDoc(doc(firestore!, 'buzzes', b.id), stripUndefined(b))
     return
   }
   store.putBuzz(b)

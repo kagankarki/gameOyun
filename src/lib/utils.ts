@@ -4,6 +4,27 @@ export const uid = (prefix = 'id') =>
 export const cx = (...parts: Array<string | false | null | undefined>) =>
   parts.filter(Boolean).join(' ')
 
+/**
+ * Firestore `undefined` alan değerlerini kabul etmez ("Unsupported field value:
+ * undefined"). Opsiyonel alanlar (ör. WrongBlock.videoEndTimestamp) açıkça
+ * undefined kaldığında setDoc patlar. Yazmadan önce undefined değerleri
+ * özyinelemeli olarak temizle — null ve diğer değerler korunur.
+ */
+export function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => stripUndefined(v)) as unknown as T
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === undefined) continue
+      out[k] = stripUndefined(v)
+    }
+    return out as T
+  }
+  return value
+}
+
 export const fmtDate = (ts: number) =>
   new Date(ts).toLocaleString('tr-TR', {
     day: '2-digit',

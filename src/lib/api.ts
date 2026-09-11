@@ -15,7 +15,7 @@ import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc } from 'firebase
 import { firebaseAuth, firestore, isFirebaseConfigured } from './firebase'
 import * as store from './store'
 import type { AppUser, Lesson, Role } from './types'
-import { uid } from './utils'
+import { stripUndefined, uid } from './utils'
 
 const live = () => Boolean(isFirebaseConfigured && firestore && firebaseAuth)
 
@@ -180,26 +180,6 @@ export async function getLesson(id: string): Promise<Lesson | null> {
   }
   store.ensureSeed()
   return store.getLessons().find((l) => l.id === id) ?? null
-}
-
-/**
- * Firestore `undefined` değerleri kabul etmez ("Unsupported field value: undefined").
- * Opsiyonel alanlar (ör. WrongBlock.videoTimestamp, followUp) açıkça undefined
- * kaldığında setDoc patlar. Kaydetmeden önce undefined değerleri özyinelemeli temizle.
- */
-function stripUndefined<T>(value: T): T {
-  if (Array.isArray(value)) {
-    return value.map((v) => stripUndefined(v)) as unknown as T
-  }
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (v === undefined) continue
-      out[k] = stripUndefined(v)
-    }
-    return out as T
-  }
-  return value
 }
 
 export async function saveLesson(lesson: Lesson): Promise<void> {

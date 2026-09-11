@@ -182,8 +182,28 @@ export async function getLesson(id: string): Promise<Lesson | null> {
   return store.getLessons().find((l) => l.id === id) ?? null
 }
 
+/**
+ * Firestore `undefined` değerleri kabul etmez ("Unsupported field value: undefined").
+ * Opsiyonel alanlar (ör. WrongBlock.videoTimestamp, followUp) açıkça undefined
+ * kaldığında setDoc patlar. Kaydetmeden önce undefined değerleri özyinelemeli temizle.
+ */
+function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((v) => stripUndefined(v)) as unknown as T
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (v === undefined) continue
+      out[k] = stripUndefined(v)
+    }
+    return out as T
+  }
+  return value
+}
+
 export async function saveLesson(lesson: Lesson): Promise<void> {
-  const payload = { ...lesson, updatedAt: Date.now() }
+  const payload = stripUndefined({ ...lesson, updatedAt: Date.now() })
   if (live()) {
     await setDoc(doc(firestore!, 'lessons', payload.id), payload)
     return

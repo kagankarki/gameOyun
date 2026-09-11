@@ -20,6 +20,12 @@ export const fmtDuration = (ms: number) => {
   return m > 0 ? `${m} dk ${r} sn` : `${r} sn`
 }
 
+export const fmtSec = (sec: number) => {
+  const m = Math.floor(sec / 60)
+  const s = Math.floor(sec % 60)
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
+
 export const initials = (name: string) =>
   name
     .trim()

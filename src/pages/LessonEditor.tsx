@@ -25,7 +25,7 @@ import { useAuth } from '@/context/AuthContext'
 import * as api from '@/lib/api'
 import * as ses from '@/lib/session'
 import { generateFollowUp, isGeminiConfigured, type Zorluk } from '@/lib/gemini'
-import { kunye, videoKunye, type DersSesi, type DersVideosu } from '@/lib/audioStore'
+import { kunye, sureMetni, videoKunye, type DersSesi, type DersVideosu } from '@/lib/audioStore'
 import { ara, cumleAraligi, reanchorWrongs, trimRange, type Eslesme } from '@/lib/marking'
 import { EASE } from '@/lib/motion'
 import type { FollowUpQuestion, Lesson, QuizQuestion, WrongBlock } from '@/lib/types'
@@ -40,6 +40,22 @@ const BOS_SORU_5: FollowUpQuestion = {
   difficulty: 'orta',
 }
 
+const formatSec = (s: number) => {
+  const sn = Math.max(0, Math.floor(s || 0))
+  const m = Math.floor(sn / 60)
+  const rem = sn % 60
+  return `${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`
+}
+
+const parseMmSs = (str: string): number => {
+  if (!str) return 0
+  if (str.includes(':')) {
+    const parts = str.split(':').map((x) => Number(x) || 0)
+    if (parts.length === 2) return parts[0] * 60 + parts[1]
+  }
+  return Number(str) || 0
+}
+
 export default function LessonEditor() {
   const { id } = useParams()
   const nav = useNavigate()
@@ -47,6 +63,7 @@ export default function LessonEditor() {
   const { user } = useAuth()
 
   const areaRef = useRef<HTMLTextAreaElement>(null)
+  const videoPlayerRef = useRef<HTMLVideoElement>(null)
 
   const [lesson, setLesson] = useState<Lesson | null>(null)
   const [script, setScript] = useState('')
@@ -67,12 +84,29 @@ export default function LessonEditor() {
   const [sesKaydi, setSesKaydi] = useState<DersSesi | null>(null)
   /** Hocanın yüklediği video kaydı — dosya bu cihazda (AudioUploader) */
   const [videoKaydi, setVideoKaydi] = useState<DersVideosu | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [videoCurrentTime, setVideoCurrentTime] = useState<number>(0)
+  const [videoTimeInput, setVideoTimeInput] = useState<string>('00:00')
+  const [videoEndInput, setVideoEndInput] = useState<string>('')
+  const [videoText, setVideoText] = useState<string>('')
+
   const [explanation, setExplanation] = useState('')
   const [correction, setCorrection] = useState('')
   const [soru, setSoru] = useState<FollowUpQuestion>(BOS_SORU_5)
   const [soruAcik, setSoruAcik] = useState(false)
   const [zorluk, setZorluk] = useState<Zorluk>('orta')
   const [uretiliyor, setUretiliyor] = useState(false)
+
+  /* Video URL yönetimi */
+  useEffect(() => {
+    if (!videoKaydi) {
+      setVideoUrl(null)
+      return
+    }
+    const u = URL.createObjectURL(videoKaydi.blob)
+    setVideoUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [videoKaydi])
 
   /* ── Dersi Getir ── */
   useEffect(() => {
@@ -188,18 +222,28 @@ export default function LessonEditor() {
     // Varsayılan KAPALI: soru isteğe bağlı, zorunlu gibi görünmesin
     setSoruAcik(false)
     setZorluk('orta')
+    setVideoText('')
+    setVideoEndInput('')
+  }
+
+  const saniyeyiAl = () => {
+    if (!videoPlayerRef.current) return
+    const cur = Math.floor(videoPlayerRef.current.currentTime)
+    setVideoTimeInput(formatSec(cur))
+    toast(`Videonun ${formatSec(cur)} saniyesi seçildi.`, 'info')
   }
 
   /* ── 5 Şıklı Soru Üret (Gemini) ── */
-  const uret = async () => {
-    if (!selectedText || !explanation.trim()) {
-      toast('Önce seçili yerin neden yanlış olduğunu açıkla — soru ona göre üretilir.', 'error')
+  const uret = async (isForVideo?: boolean) => {
+    const targetText = isForVideo ? (videoText.trim() || explanation.trim()) : selectedText
+    if (!targetText || !explanation.trim()) {
+      toast('Önce hatanın ne olduğunu ve neden yanlış olduğunu açıkla — soru ona göre üretilir.', 'error')
       return
     }
     setUretiliyor(true)
     try {
       const r = await generateFollowUp({
-        wrongText: selectedText,
+        wrongText: targetText,
         explanation: explanation.trim(),
         correction: correction.trim(),
         zorluk,
@@ -228,7 +272,59 @@ export default function LessonEditor() {
     }
   }
 
-  /* ── Hata Olarak Listeye Ekle ── */
+  /* ── Video Saniyesinden Hata Ekle ── */
+  const videoHataEkle = () => {
+    if (!explanation.trim()) {
+      toast('Lütfen bu saniyedeki bilginin neden yanlış olduğunu belirt.', 'error')
+      return
+    }
+
+    const secStart = parseMmSs(videoTimeInput)
+    const secEnd = videoEndInput ? parseMmSs(videoEndInput) : undefined
+
+    const filledOptions = soru.options.map((o) => o.trim())
+    const validCount = filledOptions.filter(Boolean).length
+    const followUp: FollowUpQuestion | undefined =
+      soruAcik && soru.question.trim() && validCount >= 2
+        ? {
+            question: soru.question.trim(),
+            options: filledOptions,
+            correctIndex: Math.min(soru.correctIndex, filledOptions.length - 1),
+            bonus: soru.bonus || 50,
+            difficulty: zorluk,
+          }
+        : undefined
+
+    const label = videoText.trim() || `⏱️ ${formatSec(secStart)} Tuzak`
+
+    const w: WrongBlock = {
+      blockIndex: wrongs.length,
+      text: label,
+      explanation: explanation.trim(),
+      correction: correction.trim(),
+      points: 100,
+      start: 0,
+      end: 0,
+      videoTimestamp: secStart,
+      videoEndTimestamp: secEnd,
+      difficulty: zorluk,
+      ...(followUp ? { followUp } : {}),
+    }
+
+    setWrongs((list) =>
+      [...list, w]
+        .sort((a, b) => (a.videoTimestamp ?? a.start) - (b.videoTimestamp ?? b.start))
+        .map((x, i) => ({ ...x, blockIndex: i })),
+    )
+
+    toast(
+      `⏱️ ${formatSec(secStart)} saniyesine ${wrongs.length + 1}. tuzak eklendi${followUp ? ' (5 şıklı soruyla)' : ''}.`,
+      'success',
+    )
+    formuTemizle()
+  }
+
+  /* ── Metinden Hata Olarak Listeye Ekle ── */
   const ekle = () => {
     if (!selection || !selectedText) {
       toast('Lütfen metinden yanlış ifadeyi seç.', 'error')
@@ -280,20 +376,28 @@ export default function LessonEditor() {
     formuTemizle()
   }
 
-  const sil = (start: number) => {
+  const silIndex = (indexToRemove: number) => {
     setWrongs((list) =>
-      list.filter((w) => w.start !== start).map((x, i) => ({ ...x, blockIndex: i })),
+      list.filter((_, i) => i !== indexToRemove).map((x, i) => ({ ...x, blockIndex: i })),
     )
+    toast('Tuzak silindi.', 'info')
+  }
+
+  const sil = (startPos: number) => {
+    setWrongs((list) =>
+      list.filter((w) => w.start !== startPos).map((x, i) => ({ ...x, blockIndex: i })),
+    )
+    toast('Çakışan tuzak silindi.', 'info')
   }
 
   /**
    * Metin değiştiğinde işaretleri yeni konumlarına taşır.
-   * Eskiden kayan işaretler sessizce siliniyordu — birkaç hata işaretleyip
-   * metne dokunan hoca hepsini birden kaybediyordu.
    */
   useEffect(() => {
     setWrongs((list) => {
       if (!list.length) return list
+      const hasTextWrongs = list.some((w) => w.videoTimestamp === undefined)
+      if (!hasTextWrongs) return list
       const { wrongs: yeni, dusen } = reanchorWrongs(script, list)
       if (dusen.length) setDusenler(dusen)
       const degisti =
@@ -349,13 +453,33 @@ export default function LessonEditor() {
   /* ── Amfi 2.0 Başlat (Canlı Oturum) ── */
   const amfiBaslat = async () => {
     if (!lesson || !user) return
-    if (!script.trim()) {
-      toast('Önce ders metnini girmelisin.', 'error')
+    if (!videoKaydi && !script.trim()) {
+      toast('Önce ders videosunu yüklemeli veya ders metnini girmelisin.', 'error')
       return
     }
     if (!wrongs.length) {
-      toast('En az 1 yanlış cümle işaretlemelisin.', 'error')
+      toast('En az 1 tuzak eklemelisin.', 'error')
       return
+    }
+
+    // Yarım kalmış sorular (metni ya da şıkları eksik) teste girmesin
+    const temizle = (list: QuizQuestion[]) =>
+      list
+        .map((q) => ({ ...q, options: q.options.map((o) => o.trim()).filter(Boolean) }))
+        .filter((q) => q.question.trim() && q.options.length >= 2)
+        .map((q) => ({ ...q, correctIndex: Math.min(q.correctIndex, q.options.length - 1) }))
+
+    const on = temizle(pretest)
+    const son = temizle(posttest)
+
+    if (pretest.length !== on.length || posttest.length !== son.length) {
+      const atilan = pretest.length - on.length + (posttest.length - son.length)
+      if (
+        !window.confirm(
+          `${atilan} soru eksik (soru metni ya da en az 2 şık gerekiyor) ve teste alınmayacak. Devam edeyim mi?`,
+        )
+      )
+        return
     }
 
     setStarting(true)
@@ -366,10 +490,10 @@ export default function LessonEditor() {
       const session = await ses.createSession(saved, user.uid, user.name, {
         version: 2,
         readingMode: 'continuous',
-        script: saved.script || script,
+        script: saved.script || script || (videoKaydi ? 'Ders Videosu' : ''),
         wrongBlocks: wrongs,
-        pretest: pretest,
-        posttest: posttest,
+        pretest: on,
+        posttest: son,
         audio: sesKaydi ? kunye(sesKaydi) : null,
         video: videoKaydi ? videoKunye(videoKaydi) : null,
       })
@@ -422,7 +546,12 @@ export default function LessonEditor() {
             size="md"
             tone="success"
             onClick={amfiBaslat}
-            disabled={saving || starting || !wrongs.length || !script.trim()}
+            disabled={
+              saving ||
+              starting ||
+              !wrongs.length ||
+              (!script.trim() && !videoKaydi)
+            }
           >
             {starting ? 'Başlatılıyor…' : '🎙️ Canlı Dersi Başlat'}
           </Button3D>
@@ -555,7 +684,7 @@ export default function LessonEditor() {
         />
       )}
 
-      {/* ── 2. AŞAMA: DERS METNİ & HATAYI YAKALAMA ALANI ── */}
+      {/* ── 2. AŞAMA: DERS MEDYASI, METİN & HATAYI YAKALAMA ALANI ── */}
       {activeTab === 'content' && (
         <>
           <AudioUploader
@@ -564,484 +693,719 @@ export default function LessonEditor() {
             onVideoChange={setVideoKaydi}
           />
 
-      {/* ── Kesintisiz Ders Notu Alanı ── */}
-      <div className="file-card space-y-3 p-6">
-        <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <div>
-            <label className="label font-bold" htmlFor="script">
-              KESİNTİSİZ DERS NOTU (METİN ARALIKSIZ OKUNUR)
-            </label>
-            <p className="mt-1 text-xs text-ink-muted">
-              Ders sırasında metin tek seferde okunur. Yanlış olan cümleyi veya ifadeyi fareyle seçtiğinde
-              aşağıda <strong className="text-ink">5 şıklı soru formu</strong> açılır.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="label-chip border-paper-edge bg-paper-deep">
-              {script.length} KARAKTER
-            </span>
-            <span className="label-chip border-paper-edge bg-paper-deep">~{okumaDk} DK OKUMA</span>
-            <span
-              className={cx(
-                'label-chip',
-                wrongs.length > 0
-                  ? 'border-mark bg-mark-soft text-mark font-bold'
-                  : 'border-paper-edge bg-paper-deep text-ink-muted',
-              )}
-            >
-              {wrongs.length} TUZAK
-            </span>
-          </div>
-        </div>
-
-        <textarea
-          id="script"
-          ref={areaRef}
-          value={script}
-          onChange={(e) => setScript(e.target.value)}
-          onSelect={readSelection}
-          onMouseUp={readSelection}
-          onTouchEnd={readSelection}
-          onKeyUp={readSelection}
-          className="field min-h-[260px] resize-y font-serif text-base leading-relaxed"
-          placeholder="Ders notunu veya paragraflarını buraya yapıştır…&#10;&#10;Örn: Arkadaşlar bugün size mezensefalon hakkında bilgiler vereceğim. Mezensefalon 3 ana alt başlıkta incelenir…"
-        />
-
-        {/* ── Metinde ara ── */}
-        <div className="mt-4 rounded-sm border border-paper-edge bg-paper-deep p-4">
-          <label className="field-label" htmlFor="ara-editor">
-            METİNDE ARA
-          </label>
-          <div className="flex flex-wrap items-center gap-3">
-            <input
-              id="ara-editor"
-              value={arama}
-              onChange={(e) => setArama(e.target.value)}
-              className="field min-w-[220px] flex-1 text-sm"
-              placeholder="Aradığın ifadeyi yaz — sonuca tıkla, o yer seçilsin"
-              autoComplete="off"
-            />
-            {arama.trim().length >= 2 && (
-              <span className="label whitespace-nowrap">{eslesmeler.length} EŞLEŞME</span>
-            )}
-            {arama && (
-              <button
-                type="button"
-                onClick={() => setArama('')}
-                className="text-xs font-semibold text-ink-muted underline underline-offset-2 hover:text-ink"
-              >
-                Temizle
-              </button>
-            )}
-          </div>
-
-          {arama.trim().length >= 2 && (
-            <div className="mt-3 max-h-64 space-y-1.5 overflow-y-auto">
-              {eslesmeler.length === 0 ? (
-                <p className="py-4 text-center text-sm text-ink-muted">Bu metinde geçmiyor.</p>
-              ) : (
-                eslesmeler.map((m) => (
-                  <div
-                    key={m.start}
-                    className={cx(
-                      'flex items-start gap-3 rounded-sm border-l-4 bg-paper-card px-3 py-2',
-                      m.isaretli ? 'border-l-mark' : 'border-l-paper-edge',
-                    )}
-                  >
-                    <span className="mt-1 font-mono text-[10px] font-bold text-ink-faint">
-                      {m.start}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => eslesmeyeGit(m)}
-                      className="min-w-0 flex-1 text-left font-serif text-sm leading-snug text-ink hover:underline"
-                      title="Bu yeri metinde seç"
-                    >
-                      {m.onizleme.slice(0, m.vurguStart)}
-                      <mark className="bg-flag-soft font-semibold text-ink">
-                        {m.onizleme.slice(m.vurguStart, m.vurguEnd)}
-                      </mark>
-                      {m.onizleme.slice(m.vurguEnd)}
-                    </button>
-                    {/* Aramadan doğrudan tuzak: metinde fareyle cümle avlamaya gerek yok */}
-                    {m.isaretli ? (
-                      <span className="label-chip mt-0.5 shrink-0 border-mark bg-mark-soft text-mark">
-                        İŞARETLİ
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => eslesmeyiIsaretle(m)}
-                        className="mt-0.5 shrink-0 rounded-sm border border-mark px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-mark transition-colors hover:bg-mark hover:text-paper"
-                      >
-                        TUZAK YAP
-                      </button>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-
-        {dusenler.length > 0 && (
-          <div className="mt-4 rounded-sm border-l-2 border-flag bg-flag-soft p-4 text-[12px] leading-relaxed text-ink">
-            <div className="flex items-start justify-between gap-3">
-              <p>
-                <strong className="font-semibold">{dusenler.length} işaret düştü:</strong> metni
-                değiştirdiğin için {dusenler.map((d) => `“${d}”`).join(', ')} artık bulunamıyor.
-              </p>
-              <button
-                type="button"
-                onClick={() => setDusenler([])}
-                className="shrink-0 font-mono text-[10px] font-bold uppercase tracking-[0.14em] text-ink-muted hover:text-ink"
-              >
-                KAPAT
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Ders medyası — Video, ses kaydı veya TTS */}
-      <AudioUploader
-        lessonId={lesson?.id}
-        onChange={setSesKaydi}
-        onVideoChange={setVideoKaydi}
-      />
-
-      {/* ── Yanlış İşaretleme & 5 Şıklı Soru Formu ── */}
-      <AnimatePresence>
-        {selection && selectedText && (
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            transition={{ duration: 0.25, ease: EASE }}
-            id="isaretleme-formu"
-            className="file-card space-y-5 border-l-4 border-l-mark p-6 shadow-lift"
-          >
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <span className="label font-bold text-mark">SEÇİLEN YANLIŞ İFADE</span>
-              <span className="font-mono text-xs text-ink-muted">
-                {selection.start} – {selection.end} karakter
-              </span>
-            </div>
-
-            <p className="rounded-sm border border-mark-edge bg-mark-soft p-3 font-serif text-base font-medium text-mark">
-              “{selectedText}”
-            </p>
-
-            {cakisan && (
-              <p className="rounded-sm border-l-2 border-flag bg-flag-soft px-4 py-3 text-sm text-ink">
-                Bu aralık zaten işaretli (“{cakisan.text}”). Lütfen önce mevcut işareti kaldır.
-              </p>
-            )}
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="field-label" htmlFor="why">
-                  BU İFADE NEDEN YANLIŞ? <span className="text-mark">*</span>
-                </label>
-                <textarea
-                  id="why"
-                  value={explanation}
-                  onChange={(e) => setExplanation(e.target.value)}
-                  className="field min-h-[80px] resize-none text-sm leading-relaxed"
-                  placeholder="Örn: Mezensefalon arka beyinde değil, orta beyinde yer alır."
-                />
-              </div>
-
-              <div>
-                <label className="field-label" htmlFor="fix">
-                  DOĞRUSU NEDİR? (ÖĞRENCİYE GÖSTERİLİR)
-                </label>
-                <textarea
-                  id="fix"
-                  value={correction}
-                  onChange={(e) => setCorrection(e.target.value)}
-                  className="field min-h-[80px] resize-none text-sm leading-relaxed"
-                  placeholder="Örn: Doğrusu: Mezensefalon, beyin sapının orta kısmını oluşturan orta beyindir."
-                />
-              </div>
-            </div>
-
-            {/* ── 5 Şıklı Ek Soru Bölümü ── */}
-            <div className="rounded-sm border border-paper-edge bg-paper-deep p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* ══════════════════════════════════════════════════════════
+              VİDEO AKTİF İSE: VİDEO SANİYESİ İLE HATA BELİRLEME MERKEZİ
+             ══════════════════════════════════════════════════════════ */}
+          {videoKaydi && (
+            <div className="file-card space-y-5 border-l-4 border-l-verify p-6">
+              <div className="flex flex-wrap items-baseline justify-between gap-3">
                 <div>
-                  <p className="label font-bold text-ink">
-                    5 ŞIKLI EK SORU{' '}
-                    <span className="text-ink-muted">· İSTEĞE BAĞLI</span>
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className="label font-bold text-verify">🎬 VİDEO TUZAK & SANİYE BELİRLEME</span>
+                    <span className="label-chip border-verify-edge bg-verify-soft text-verify font-bold">
+                      VİDEO AKTİF
+                    </span>
+                  </div>
                   <p className="mt-1 text-xs text-ink-muted">
-                    6 saniyede zili çalan öğrencinin ekranında açılır; doğru bilirse{' '}
-                    <strong className="text-verify">+{soru.bonus} ek puan</strong>.{' '}
-                    <strong className="text-ink">Boş bırakabilirsin</strong> — tuzak soru olmadan da
-                    eklenir.
+                    Videoyu oynatıp hatanın geçtiği saniyede durdurun ve <strong>"📍 Oynatılan Saniyeyi Al"</strong> butonuna basın ya da doğrudan saniye girin.
                   </p>
                 </div>
-
-                {/* Zorluk & AI Üretim */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button3D
-                    type="button"
-                    size="sm"
-                    tone="ghost"
-                    onClick={() => setSoruAcik((v) => !v)}
+                <div className="flex items-center gap-2">
+                  <span className="label-chip border-paper-edge bg-paper-deep font-mono">
+                    ⏱️ {formatSec(videoCurrentTime)} / {sureMetni(videoKaydi.durationMs)}
+                  </span>
+                  <span
+                    className={cx(
+                      'label-chip',
+                      wrongs.length > 0
+                        ? 'border-mark bg-mark-soft text-mark font-bold'
+                        : 'border-paper-edge bg-paper-deep text-ink-muted',
+                    )}
                   >
-                    {soruAcik ? 'Soruyu Atla' : 'Soru Ekle'}
-                  </Button3D>
-                  <div className="flex items-center gap-1 rounded-sm border border-paper-edge bg-paper-card p-1">
-                    <span className="px-1.5 font-mono text-[10px] font-bold text-ink-muted">
-                      ZORLUK:
-                    </span>
-                    {(['kolay', 'orta', 'zor'] as const).map((z) => (
-                      <button
-                        key={z}
-                        type="button"
-                        onClick={() => setZorluk(z)}
-                        className={cx(
-                          'rounded-xs px-2 py-1 font-mono text-[11px] font-bold uppercase transition-colors',
-                          zorluk === z
-                            ? 'bg-ink text-paper'
-                            : 'text-ink-muted hover:bg-paper-deep hover:text-ink',
-                        )}
-                      >
-                        {z}
-                      </button>
-                    ))}
-                  </div>
+                    {wrongs.length} TUZAK
+                  </span>
+                </div>
+              </div>
 
+              {/* Video Oynatıcı Önizleme */}
+              {videoUrl && (
+                <div className="overflow-hidden rounded-sm border-2 border-paper-edge bg-black">
+                  <video
+                    ref={videoPlayerRef}
+                    src={videoUrl}
+                    controls
+                    playsInline
+                    onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
+                    className="max-h-[380px] w-full object-contain mx-auto"
+                    muted={!videoKaydi.hasAudio}
+                  />
+                </div>
+              )}
+
+              {/* Saniye Seçme ve Hata Tanımlama Formu */}
+              <div className="rounded-sm border-2 border-paper-edge bg-paper-deep p-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-paper-edge pb-3">
+                  <span className="label font-bold text-ink">YENİ VİDEO TUZAĞI EKLE</span>
                   <Button3D
                     type="button"
                     size="sm"
                     tone="gold"
-                    onClick={uret}
-                    disabled={uretiliyor || !isGeminiConfigured}
+                    onClick={saniyeyiAl}
+                    title="Videonun şu an durduğu saniyeyi al"
                   >
-                    {uretiliyor ? 'Üretiliyor…' : '✨ 5 Şıklı Soru Üret'}
+                    📍 Oynatılan Saniyeyi Al ({formatSec(videoCurrentTime)})
                   </Button3D>
                 </div>
-              </div>
 
-              {!soruAcik && (
-                <p className="mt-3 text-xs text-ink-muted">
-                  Bu tuzakta ek soru sorulmayacak. Öğrenci hatayı yakaladığında puanını
-                  alır, soru ekranı açılmaz.
-                </p>
-              )}
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div>
+                    <label className="field-label" htmlFor="v-time">
+                      HATA SANİYESİ (DK:SN VEYA SN) <span className="text-mark">*</span>
+                    </label>
+                    <input
+                      id="v-time"
+                      value={videoTimeInput}
+                      onChange={(e) => setVideoTimeInput(e.target.value)}
+                      className="field font-mono font-bold text-sm"
+                      placeholder="Örn: 01:25 veya 85"
+                    />
+                    <p className="mt-1 text-[11px] text-ink-muted">
+                      Seçili: <strong className="text-ink font-mono">{formatSec(parseMmSs(videoTimeInput))}</strong> ({parseMmSs(videoTimeInput)} sn)
+                    </p>
+                  </div>
 
-              {soruAcik && (
-              <div className="mt-4 space-y-3">
-                <div>
-                  <label className="field-label" htmlFor="q">
-                    SORU METNİ
-                  </label>
-                  <textarea
-                    id="q"
-                    value={soru.question}
-                    onChange={(e) => setSoru({ ...soru, question: e.target.value })}
-                    className="field min-h-[60px] resize-none"
-                    placeholder="Örn: Okunan ifadedeki yanlış bilgiye göre mezensefalonun doğru konumu aşağıdakilerden hangisidir?"
-                  />
+                  <div>
+                    <label className="field-label" htmlFor="v-end">
+                      BİTİŞ SANİYESİ (İSTEĞE BAĞLI)
+                    </label>
+                    <input
+                      id="v-end"
+                      value={videoEndInput}
+                      onChange={(e) => setVideoEndInput(e.target.value)}
+                      className="field font-mono text-sm"
+                      placeholder="Örn: 01:30 (boş kalabilir)"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="field-label" htmlFor="v-text">
+                      HATA / YANLIŞ İFADE BAŞLIĞI
+                    </label>
+                    <input
+                      id="v-text"
+                      value={videoText}
+                      onChange={(e) => setVideoText(e.target.value)}
+                      className="field text-sm"
+                      placeholder="Örn: Mezensefalon arka beyindedir dendi"
+                    />
+                  </div>
                 </div>
 
-                <div className="space-y-2">
-                  <p className="field-label mb-1">
-                    5 SEÇENEK (A, B, C, D, E) — <span className="text-verify">Doğru olan şıkkın harfine tıkla</span>
-                  </p>
-                  {['A', 'B', 'C', 'D', 'E'].map((letter, i) => (
-                    <div key={i} className="flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setSoru({ ...soru, correctIndex: i })}
-                        className={cx(
-                          'grid h-9 w-9 shrink-0 place-items-center rounded-sm border-2 font-mono text-xs font-bold transition-all',
-                          soru.correctIndex === i
-                            ? 'border-verify bg-verify text-white shadow-md ring-2 ring-verify/30'
-                            : 'border-paper-edge bg-paper-card text-ink-muted hover:border-ink',
-                        )}
-                        title={`${letter} şıkkını doğru cevap yap`}
-                      >
-                        {letter}
-                      </button>
-                      <input
-                        value={soru.options[i] ?? ''}
-                        onChange={(e) => {
-                          const next = [...soru.options]
-                          while (next.length < 5) next.push('')
-                          next[i] = e.target.value
-                          setSoru({ ...soru, options: next })
-                        }}
-                        className={cx(
-                          'field py-1.5 transition-colors',
-                          soru.correctIndex === i && 'border-verify bg-verify-soft/25 font-medium text-ink ring-1 ring-verify',
-                        )}
-                        placeholder={`${letter} şıkkı`}
-                      />
-                      {soru.correctIndex === i && (
-                        <span className="shrink-0 font-mono text-[11px] font-bold text-verify animate-pulse">
-                          ✓ DOĞRU ŞIK
-                        </span>
-                      )}
-                    </div>
-                  ))}
+                {/* Hatanın Açıklaması ve Doğrusu */}
+                <div className="grid gap-4 sm:grid-cols-2 pt-1">
+                  <div>
+                    <label className="field-label" htmlFor="v-why">
+                      BU SANİYEDEKİ BİLGİ NEDEN YANLIŞ? <span className="text-mark">*</span>
+                    </label>
+                    <textarea
+                      id="v-why"
+                      value={explanation}
+                      onChange={(e) => setExplanation(e.target.value)}
+                      className="field min-h-[75px] resize-none text-sm leading-relaxed"
+                      placeholder="Örn: Mezensefalon arka beyinde değil, orta beyinde yer alır."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="field-label" htmlFor="v-fix">
+                      DOĞRUSU NEDİR? (ÖĞRENCİYE GÖSTERİLİR)
+                    </label>
+                    <textarea
+                      id="v-fix"
+                      value={correction}
+                      onChange={(e) => setCorrection(e.target.value)}
+                      className="field min-h-[75px] resize-none text-sm leading-relaxed"
+                      placeholder="Örn: Doğrusu: Mezensefalon beyin sapının orta kısmıdır."
+                    />
+                  </div>
                 </div>
-              </div>
-              )}
-            </div>
 
-            <div className="space-y-3 pt-2">
-              <div className="flex flex-wrap items-center gap-3">
-                <Button3D
-                  type="button"
-                  onClick={ekle}
-                  size="md"
-                  tone="danger"
-                  disabled={!explanation.trim() || !!cakisan}
-                >
-                  {soru.question.trim()
-                    ? 'Tuzak Olarak İşaretle (soruyla)'
-                    : 'Tuzak Olarak İşaretle'}
-                </Button3D>
-                <Button3D type="button" onClick={formuTemizle} size="md" tone="ghost">
-                  Vazgeç
-                </Button3D>
-                {cakisan && (
-                  <Button3D
-                    type="button"
-                    size="md"
-                    tone="ghost"
-                    onClick={() => sil(cakisan.start)}
-                  >
-                    Çakışan Tuzağı Sil
-                  </Button3D>
-                )}
-              </div>
-
-              {/* Düğme neden kapalı? Sessiz kalmıyoruz. */}
-              {(!explanation.trim() || cakisan) && (
-                <p className="text-xs leading-relaxed text-mark">
-                  {cakisan
-                    ? 'Seçtiğin yer mevcut bir tuzakla çakışıyor. Ya çakışmayan bir aralık seç ya da yukarıdaki düğmeyle eski tuzağı sil.'
-                    : '“Bu ifade neden yanlış?” alanını doldurunca tuzak eklenebilir. 5 şıklı soru zorunlu değil.'}
-                </p>
-              )}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* ── İşaretlenen Tuzaklar / Sorular Listesi ── */}
-      <div className="file-card p-6">
-        <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-paper-edge pb-4">
-          <div>
-            <h3 className="font-display text-lg font-bold text-ink">
-              İşaretlenen Hatalar ({wrongs.length})
-            </h3>
-            <p className="mt-0.5 text-xs text-ink-muted">
-              Öğrenciler ders okunurken bu tuzakları duyduklarında 6 saniye içinde zili çalacaktır.
-            </p>
-          </div>
-          <span className="label font-bold text-verify">{soruluSayi} TANESİNDE 5 ŞIKLI SORU HAZIR</span>
-        </div>
-
-        {wrongs.length === 0 ? (
-          <div className="py-12 text-center">
-            <p className="label">HENÜZ TUZAK İŞARETLENMEDİ</p>
-            <p className="mt-2 text-sm text-ink-muted">
-              Yukarıdaki metinden yanlış olan bir cümleyi fareyle seçerek ilk hatayı işaretleyebilirsin.
-            </p>
-          </div>
-        ) : (
-          <div className="mt-4 space-y-3">
-            {wrongs.map((w, i) => (
-              <div
-                key={w.start}
-                className="rounded-sm border-l-4 border-l-mark bg-mark-soft p-4 transition-colors"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex items-start gap-3">
-                    <span className="grid h-6 w-6 shrink-0 place-items-center rounded-sm bg-mark font-mono text-xs font-bold text-white">
-                      {i + 1}
-                    </span>
-                    <div className="space-y-1">
-                      <p className="font-serif text-base font-semibold text-mark">“{w.text}”</p>
-                      <p className="text-xs leading-relaxed text-ink">
-                        <strong>Neden Yanlış:</strong> {w.explanation}
+                {/* ── 5 Şıklı Ek Soru Bölümü ── */}
+                <div className="rounded-sm border border-paper-edge bg-paper-card p-4 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="label font-bold text-ink">
+                        5 ŞIKLI EK SORU <span className="text-ink-muted">· İSTEĞE BAĞLI</span>
                       </p>
-                      {w.correction && (
-                        <p className="text-xs leading-relaxed text-verify">
-                          <strong>Doğrusu:</strong> {w.correction}
-                        </p>
-                      )}
-                      {w.followUp && (
-                        <div className="mt-2 rounded-xs border border-verify-edge bg-verify-soft p-2.5">
-                          <p className="font-mono text-xs font-bold text-verify">
-                            5 ŞIKLI SORU ({w.followUp.difficulty ?? 'orta'}): {w.followUp.question}
-                          </p>
-                          <div className="mt-1.5 grid gap-1 font-mono text-[11px] text-ink sm:grid-cols-2">
-                            {w.followUp.options.map((opt, optIdx) => (
-                              <span
-                                key={optIdx}
-                                className={cx(
-                                  'truncate',
-                                  optIdx === w.followUp?.correctIndex
-                                    ? 'font-bold text-verify'
-                                    : 'text-ink-muted',
-                                )}
-                              >
-                                {String.fromCharCode(65 + optIdx)}) {opt}
-                                {optIdx === w.followUp?.correctIndex ? ' ✓' : ''}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
+                      <p className="mt-0.5 text-xs text-ink-muted">
+                        10 saniyede tuzağı yakalayan öğrencinin telefonunda açılır (+{soru.bonus} ek puan).
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button3D
+                        type="button"
+                        size="sm"
+                        tone="ghost"
+                        onClick={() => setSoruAcik((v) => !v)}
+                      >
+                        {soruAcik ? 'Soruyu Atla' : 'Soru Ekle'}
+                      </Button3D>
+                      <div className="flex items-center gap-1 rounded-sm border border-paper-edge bg-paper-deep p-1">
+                        <span className="px-1.5 font-mono text-[10px] font-bold text-ink-muted">
+                          ZORLUK:
+                        </span>
+                        {(['kolay', 'orta', 'zor'] as const).map((z) => (
+                          <button
+                            key={z}
+                            type="button"
+                            onClick={() => setZorluk(z)}
+                            className={cx(
+                              'rounded-xs px-2 py-0.5 font-mono text-[10px] font-bold uppercase transition-colors',
+                              zorluk === z
+                                ? 'bg-ink text-paper'
+                                : 'text-ink-muted hover:bg-paper-card hover:text-ink',
+                            )}
+                          >
+                            {z}
+                          </button>
+                        ))}
+                      </div>
+
+                      <Button3D
+                        type="button"
+                        size="sm"
+                        tone="gold"
+                        onClick={() => uret(true)}
+                        disabled={uretiliyor || !isGeminiConfigured}
+                      >
+                        {uretiliyor ? 'Üretiliyor…' : '✨ 5 Şıklı Soru Üret'}
+                      </Button3D>
                     </div>
                   </div>
 
-                  <button
+                  {soruAcik && (
+                    <div className="mt-3 space-y-3 pt-2 border-t border-paper-edge">
+                      <div>
+                        <label className="field-label" htmlFor="v-q">
+                          SORU METNİ
+                        </label>
+                        <textarea
+                          id="v-q"
+                          value={soru.question}
+                          onChange={(e) => setSoru({ ...soru, question: e.target.value })}
+                          className="field min-h-[55px] resize-none text-sm"
+                          placeholder="Örn: Videodaki açıklamaya göre mezensefalonun doğru konumu neresidir?"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <p className="field-label mb-1">
+                          5 SEÇENEK (A, B, C, D, E) — <span className="text-verify">Doğru şıkkın harfine tıkla</span>
+                        </p>
+                        {['A', 'B', 'C', 'D', 'E'].map((letter, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSoru({ ...soru, correctIndex: i })}
+                              className={cx(
+                                'grid h-8 w-8 shrink-0 place-items-center rounded-sm border-2 font-mono text-xs font-bold transition-all',
+                                soru.correctIndex === i
+                                  ? 'border-verify bg-verify text-white shadow-md ring-2 ring-verify/30'
+                                  : 'border-paper-edge bg-paper-deep text-ink-muted hover:border-ink',
+                              )}
+                              title={`${letter} şıkkını doğru cevap yap`}
+                            >
+                              {letter}
+                            </button>
+                            <input
+                              value={soru.options[i] ?? ''}
+                              onChange={(e) => {
+                                const next = [...soru.options]
+                                while (next.length < 5) next.push('')
+                                next[i] = e.target.value
+                                setSoru({ ...soru, options: next })
+                              }}
+                              className={cx(
+                                'field py-1 text-sm transition-colors',
+                                soru.correctIndex === i && 'border-verify bg-verify-soft/25 font-medium text-ink ring-1 ring-verify',
+                              )}
+                              placeholder={`${letter} şıkkı`}
+                            />
+                            {soru.correctIndex === i && (
+                              <span className="shrink-0 font-mono text-[10px] font-bold text-verify animate-pulse">
+                                ✓ DOĞRU
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 pt-2">
+                  <Button3D
                     type="button"
-                    onClick={() => sil(w.start)}
-                    className="shrink-0 rounded-sm px-2 py-1 font-mono text-xs font-bold text-mark hover:bg-mark-soft"
-                    title="İşareti sil"
+                    onClick={videoHataEkle}
+                    size="md"
+                    tone="danger"
+                    disabled={!explanation.trim()}
                   >
-                    ✕ SİL
-                  </button>
+                    {soru.question.trim() ? '🎬 Videoya Tuzağı Ekle (soruyla)' : '🎬 Videoya Tuzağı Ekle'}
+                  </Button3D>
+                  <Button3D type="button" onClick={formuTemizle} size="md" tone="ghost">
+                    Formu Temizle
+                  </Button3D>
                 </div>
               </div>
-            ))}
+            </div>
+          )}
+
+          {/* ══════════════════════════════════════════════════════════
+              METİN KESİNTİSİZ DERS NOTU (Video yokken ana alan; video varsa isteğe bağlı)
+             ══════════════════════════════════════════════════════════ */}
+          {(!videoKaydi || script.trim().length > 0) && (
+            <div className="file-card space-y-3 p-6">
+              <div className="flex flex-wrap items-baseline justify-between gap-3">
+                <div>
+                  <label className="label font-bold" htmlFor="script">
+                    {videoKaydi ? 'DERS METNİ (İSTEĞE BAĞLI ALTYAZI / NOT)' : 'KESİNTİSİZ DERS NOTU (METİN ARALIKSIZ OKUNUR)'}
+                  </label>
+                  <p className="mt-1 text-xs text-ink-muted">
+                    {videoKaydi
+                      ? 'Video kullanıldığı için metin zorunlu değildir. İsterseniz ders notunu burada da tutabilirsiniz.'
+                      : 'Ders sırasında metin tek seferde okunur. Yanlış cümleyi seçtiğinizde aşağıda 5 şıklı soru formu açılır.'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="label-chip border-paper-edge bg-paper-deep">
+                    {script.length} KARAKTER
+                  </span>
+                  {!videoKaydi && (
+                    <span className="label-chip border-paper-edge bg-paper-deep">~{okumaDk} DK OKUMA</span>
+                  )}
+                </div>
+              </div>
+
+              <textarea
+                id="script"
+                ref={areaRef}
+                value={script}
+                onChange={(e) => setScript(e.target.value)}
+                onSelect={readSelection}
+                onMouseUp={readSelection}
+                onTouchEnd={readSelection}
+                onKeyUp={readSelection}
+                className="field min-h-[180px] resize-y font-serif text-base leading-relaxed"
+                placeholder={videoKaydi ? 'İsteğe bağlı ders notu veya döküm…' : 'Ders notunu veya paragraflarını buraya yapıştır…'}
+              />
+
+              {/* ── Metinde ara ── */}
+              {!videoKaydi && (
+                <div className="mt-4 rounded-sm border border-paper-edge bg-paper-deep p-4">
+                  <label className="field-label" htmlFor="ara-editor">
+                    METİNDE ARA
+                  </label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <input
+                      id="ara-editor"
+                      value={arama}
+                      onChange={(e) => setArama(e.target.value)}
+                      className="field min-w-[220px] flex-1 text-sm"
+                      placeholder="Aradığın ifadeyi yaz — sonuca tıkla, o yer seçilsin"
+                      autoComplete="off"
+                    />
+                    {arama.trim().length >= 2 && (
+                      <span className="label whitespace-nowrap">{eslesmeler.length} EŞLEŞME</span>
+                    )}
+                    {arama && (
+                      <button
+                        type="button"
+                        onClick={() => setArama('')}
+                        className="text-xs font-semibold text-ink-muted underline underline-offset-2 hover:text-ink"
+                      >
+                        Temizle
+                      </button>
+                    )}
+                  </div>
+
+                  {arama.trim().length >= 2 && (
+                    <div className="mt-3 max-h-64 space-y-1.5 overflow-y-auto">
+                      {eslesmeler.length === 0 ? (
+                        <p className="py-4 text-center text-sm text-ink-muted">Bu metinde geçmiyor.</p>
+                      ) : (
+                        eslesmeler.map((m) => (
+                          <div
+                            key={m.start}
+                            className={cx(
+                              'flex items-start gap-3 rounded-sm border-l-4 bg-paper-card px-3 py-2',
+                              m.isaretli ? 'border-l-mark' : 'border-l-paper-edge',
+                            )}
+                          >
+                            <span className="mt-1 font-mono text-[10px] font-bold text-ink-faint">
+                              {m.start}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => eslesmeyeGit(m)}
+                              className="min-w-0 flex-1 text-left font-serif text-sm leading-snug text-ink hover:underline"
+                              title="Bu yeri metinde seç"
+                            >
+                              {m.onizleme.slice(0, m.vurguStart)}
+                              <mark className="bg-flag-soft font-semibold text-ink">
+                                {m.onizleme.slice(m.vurguStart, m.vurguEnd)}
+                              </mark>
+                              {m.onizleme.slice(m.vurguEnd)}
+                            </button>
+                            {m.isaretli ? (
+                              <span className="label-chip mt-0.5 shrink-0 border-mark bg-mark-soft text-mark">
+                                İŞARETLİ
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => eslesmeyiIsaretle(m)}
+                                className="mt-0.5 shrink-0 rounded-sm border border-mark px-2 py-1 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-mark transition-colors hover:bg-mark hover:text-paper"
+                              >
+                                TUZAK YAP
+                              </button>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Metin İşaretleme & 5 Şıklı Soru Formu (Video Yokken) ── */}
+          <AnimatePresence>
+            {!videoKaydi && selection && selectedText && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.25, ease: EASE }}
+                id="isaretleme-formu"
+                className="file-card space-y-5 border-l-4 border-l-mark p-6 shadow-lift"
+              >
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="label font-bold text-mark">SEÇİLEN YANLIŞ İFADE</span>
+                  <span className="font-mono text-xs text-ink-muted">
+                    {selection.start} – {selection.end} karakter
+                  </span>
+                </div>
+
+                <p className="rounded-sm border border-mark-edge bg-mark-soft p-3 font-serif text-base font-medium text-mark">
+                  “{selectedText}”
+                </p>
+
+                {cakisan && (
+                  <p className="rounded-sm border-l-2 border-flag bg-flag-soft px-4 py-3 text-sm text-ink">
+                    Bu aralık zaten işaretli (“{cakisan.text}”). Lütfen önce mevcut işareti kaldır.
+                  </p>
+                )}
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <label className="field-label" htmlFor="why">
+                      BU İFADE NEDEN YANLIŞ? <span className="text-mark">*</span>
+                    </label>
+                    <textarea
+                      id="why"
+                      value={explanation}
+                      onChange={(e) => setExplanation(e.target.value)}
+                      className="field min-h-[80px] resize-none text-sm leading-relaxed"
+                      placeholder="Örn: Mezensefalon arka beyinde değil, orta beyinde yer alır."
+                    />
+                  </div>
+
+                  <div>
+                    <label className="field-label" htmlFor="fix">
+                      DOĞRUSU NEDİR? (ÖĞRENCİYE GÖSTERİLİR)
+                    </label>
+                    <textarea
+                      id="fix"
+                      value={correction}
+                      onChange={(e) => setCorrection(e.target.value)}
+                      className="field min-h-[80px] resize-none text-sm leading-relaxed"
+                      placeholder="Örn: Doğrusu: Mezensefalon beyin sapının orta kısmıdır."
+                    />
+                  </div>
+                </div>
+
+                {/* 5 Şıklı Soru */}
+                <div className="rounded-sm border border-paper-edge bg-paper-deep p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="label font-bold text-ink">
+                        5 ŞIKLI EK SORU <span className="text-ink-muted">· İSTEĞE BAĞLI</span>
+                      </p>
+                      <p className="mt-1 text-xs text-ink-muted">
+                        10 saniyede zili çalan öğrencinin ekranında açılır (+{soru.bonus} ek puan).
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button3D
+                        type="button"
+                        size="sm"
+                        tone="ghost"
+                        onClick={() => setSoruAcik((v) => !v)}
+                      >
+                        {soruAcik ? 'Soruyu Atla' : 'Soru Ekle'}
+                      </Button3D>
+                      <div className="flex items-center gap-1 rounded-sm border border-paper-edge bg-paper-card p-1">
+                        <span className="px-1.5 font-mono text-[10px] font-bold text-ink-muted">
+                          ZORLUK:
+                        </span>
+                        {(['kolay', 'orta', 'zor'] as const).map((z) => (
+                          <button
+                            key={z}
+                            type="button"
+                            onClick={() => setZorluk(z)}
+                            className={cx(
+                              'rounded-xs px-2 py-1 font-mono text-[11px] font-bold uppercase transition-colors',
+                              zorluk === z
+                                ? 'bg-ink text-paper'
+                                : 'text-ink-muted hover:bg-paper-deep hover:text-ink',
+                            )}
+                          >
+                            {z}
+                          </button>
+                        ))}
+                      </div>
+
+                      <Button3D
+                        type="button"
+                        size="sm"
+                        tone="gold"
+                        onClick={() => uret(false)}
+                        disabled={uretiliyor || !isGeminiConfigured}
+                      >
+                        {uretiliyor ? 'Üretiliyor…' : '✨ 5 Şıklı Soru Üret'}
+                      </Button3D>
+                    </div>
+                  </div>
+
+                  {soruAcik && (
+                    <div className="mt-4 space-y-3">
+                      <div>
+                        <label className="field-label" htmlFor="q">
+                          SORU METNİ
+                        </label>
+                        <textarea
+                          id="q"
+                          value={soru.question}
+                          onChange={(e) => setSoru({ ...soru, question: e.target.value })}
+                          className="field min-h-[60px] resize-none"
+                          placeholder="Örn: Okunan ifadedeki yanlış bilgiye göre mezensefalonun doğru konumu aşağıdakilerden hangisidir?"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <p className="field-label mb-1">
+                          5 SEÇENEK (A, B, C, D, E) — <span className="text-verify">Doğru olan şıkkın harfine tıkla</span>
+                        </p>
+                        {['A', 'B', 'C', 'D', 'E'].map((letter, i) => (
+                          <div key={i} className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => setSoru({ ...soru, correctIndex: i })}
+                              className={cx(
+                                'grid h-9 w-9 shrink-0 place-items-center rounded-sm border-2 font-mono text-xs font-bold transition-all',
+                                soru.correctIndex === i
+                                  ? 'border-verify bg-verify text-white shadow-md ring-2 ring-verify/30'
+                                  : 'border-paper-edge bg-paper-card text-ink-muted hover:border-ink',
+                              )}
+                              title={`${letter} şıkkını doğru cevap yap`}
+                            >
+                              {letter}
+                            </button>
+                            <input
+                              value={soru.options[i] ?? ''}
+                              onChange={(e) => {
+                                const next = [...soru.options]
+                                while (next.length < 5) next.push('')
+                                next[i] = e.target.value
+                                setSoru({ ...soru, options: next })
+                              }}
+                              className={cx(
+                                'field py-1.5 transition-colors',
+                                soru.correctIndex === i && 'border-verify bg-verify-soft/25 font-medium text-ink ring-1 ring-verify',
+                              )}
+                              placeholder={`${letter} şıkkı`}
+                            />
+                            {soru.correctIndex === i && (
+                              <span className="shrink-0 font-mono text-[11px] font-bold text-verify animate-pulse">
+                                ✓ DOĞRU ŞIK
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-3 pt-2">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Button3D
+                      type="button"
+                      onClick={ekle}
+                      size="md"
+                      tone="danger"
+                      disabled={!explanation.trim() || !!cakisan}
+                    >
+                      {soru.question.trim() ? 'Tuzak Olarak İşaretle (soruyla)' : 'Tuzak Olarak İşaretle'}
+                    </Button3D>
+                    <Button3D type="button" onClick={formuTemizle} size="md" tone="ghost">
+                      Vazgeç
+                    </Button3D>
+                    {cakisan && (
+                      <Button3D type="button" size="md" tone="ghost" onClick={() => sil(cakisan.start)}>
+                        Çakışan Tuzağı Sil
+                      </Button3D>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* ── İşaretlenen Tuzaklar / Sorular Listesi ── */}
+          <div className="file-card p-6">
+            <div className="flex flex-wrap items-baseline justify-between gap-3 border-b border-paper-edge pb-4">
+              <div>
+                <h3 className="font-display text-lg font-bold text-ink">
+                  İşaretlenen Hatalar ({wrongs.length})
+                </h3>
+                <p className="mt-0.5 text-xs text-ink-muted">
+                  Öğrenciler bu tuzakları duyduklarında / gördüklerinde 10 saniye içinde zili çalacaktır.
+                </p>
+              </div>
+              <span className="label font-bold text-verify">{soruluSayi} TANESİNDE 5 ŞIKLI SORU HAZIR</span>
+            </div>
+
+            {wrongs.length === 0 ? (
+              <div className="py-12 text-center">
+                <p className="label">HENÜZ TUZAK İŞARETLENMEDİ</p>
+                <p className="mt-2 text-sm text-ink-muted">
+                  {videoKaydi
+                    ? 'Yukarıdaki video kontrolünden saniye belirleyip ilk hatayı ekleyebilirsin.'
+                    : 'Yukarıdaki metinden yanlış olan bir cümleyi fareyle seçerek ilk hatayı işaretleyebilirsin.'}
+                </p>
+              </div>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {wrongs.map((w, i) => (
+                  <div
+                    key={i}
+                    className="rounded-sm border-l-4 border-l-mark bg-mark-soft p-4 transition-colors"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-start gap-3">
+                        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-sm bg-mark font-mono text-xs font-bold text-white">
+                          {i + 1}
+                        </span>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {w.videoTimestamp !== undefined && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (videoPlayerRef.current) {
+                                    videoPlayerRef.current.currentTime = w.videoTimestamp!
+                                    videoPlayerRef.current.play().catch(() => {})
+                                  }
+                                }}
+                                className="rounded-xs border border-verify bg-verify-soft px-2 py-0.5 font-mono text-xs font-bold text-verify hover:bg-verify hover:text-white transition-colors"
+                                title="Videoda bu saniyeye git"
+                              >
+                                ⏱️ {formatSec(w.videoTimestamp)}
+                                {w.videoEndTimestamp ? ` - ${formatSec(w.videoEndTimestamp)}` : ''} ▶
+                              </button>
+                            )}
+                            <p className="font-serif text-base font-semibold text-mark">“{w.text}”</p>
+                          </div>
+
+                          <p className="text-xs leading-relaxed text-ink">
+                            <strong>Neden Yanlış:</strong> {w.explanation}
+                          </p>
+                          {w.correction && (
+                            <p className="text-xs leading-relaxed text-verify">
+                              <strong>Doğrusu:</strong> {w.correction}
+                            </p>
+                          )}
+                          {w.followUp && (
+                            <div className="mt-2 rounded-xs border border-verify-edge bg-verify-soft p-2.5">
+                              <p className="font-mono text-xs font-bold text-verify">
+                                5 ŞIKLI SORU ({w.followUp.difficulty ?? 'orta'}): {w.followUp.question}
+                              </p>
+                              <div className="mt-1.5 grid gap-1 font-mono text-[11px] text-ink sm:grid-cols-2">
+                                {w.followUp.options.map((opt, optIdx) => (
+                                  <span
+                                    key={optIdx}
+                                    className={cx(
+                                      'truncate',
+                                      optIdx === w.followUp?.correctIndex
+                                        ? 'font-bold text-verify'
+                                        : 'text-ink-muted',
+                                    )}
+                                  >
+                                    {String.fromCharCode(65 + optIdx)}) {opt}
+                                    {optIdx === w.followUp?.correctIndex ? ' ✓' : ''}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => silIndex(i)}
+                        className="shrink-0 rounded-sm px-2 py-1 font-mono text-xs font-bold text-mark hover:bg-mark-soft"
+                        title="İşareti sil"
+                      >
+                        ✕ SİL
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* ── Alt Başlat Çubuğu ── */}
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-sm border border-paper-edge bg-paper-card p-5">
-        <div>
-          <p className="font-display text-base font-bold text-ink">
-            Ders Hazır: {wrongs.length} Tuzak · {soruluSayi} 5 Şıklı Soru
-          </p>
-          <p className="text-xs text-ink-muted">
-            Öğrencilerin cevaplama penceresi: 6 saniye · En hızlı cevap veren en yüksek puanı alır.
-          </p>
-        </div>
+          {/* ── Alt Başlat Çubuğu ── */}
+          <div className="flex flex-wrap items-center justify-between gap-4 rounded-sm border border-paper-edge bg-paper-card p-5">
+            <div>
+              <p className="font-display text-base font-bold text-ink">
+                Ders Hazır: {wrongs.length} Tuzak · {soruluSayi} 5 Şıklı Soru
+              </p>
+              <p className="text-xs text-ink-muted">
+                Öğrencilerin cevaplama penceresi: 10 saniye · En hızlı cevap veren en yüksek puanı alır.
+              </p>
+            </div>
 
-        <div className="flex flex-wrap items-center gap-3">
-          <Button3D size="lg" tone="ghost" onClick={() => kaydet()} disabled={saving || starting}>
-            {saving ? 'Kaydediliyor…' : 'Taslağı Kaydet'}
-          </Button3D>
-          <Button3D
-            size="lg"
-            tone="success"
-            onClick={amfiBaslat}
-            disabled={saving || starting || !wrongs.length || !script.trim()}
-          >
-            {starting ? 'Oturum Açılıyor…' : '🎙️ Canlı Dersi Başlat'}
-          </Button3D>
-        </div>
-      </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button3D size="lg" tone="ghost" onClick={() => kaydet()} disabled={saving || starting}>
+                {saving ? 'Kaydediliyor…' : 'Taslağı Kaydet'}
+              </Button3D>
+              <Button3D
+                size="lg"
+                tone="success"
+                onClick={amfiBaslat}
+                disabled={saving || starting || !wrongs.length || (!videoKaydi && !script.trim())}
+              >
+                {starting ? 'Oturum Açılıyor…' : '🎙️ Canlı Dersi Başlat'}
+              </Button3D>
+            </div>
+          </div>
         </>
       )}
     </motion.div>

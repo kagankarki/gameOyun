@@ -54,7 +54,7 @@ import type {
   SessionRating,
   SessionSecret,
 } from '@/lib/types'
-import { cx, initials } from '@/lib/utils'
+import { cx, fmtSec, initials } from '@/lib/utils'
 import { EASE } from '@/lib/motion'
 
 /** Perdede metnin okunan kısmından ne kadarını gösterelim */
@@ -182,6 +182,9 @@ export default function AmfiHostV2() {
 
   /** (an, karakter) çizelgesi — basışları metne eşlemek için */
   const marksRef = useRef<ses.SpeechMark[]>([])
+  /** (an, video_saniyesi) çizelgesi — video tuzaklarını saniyeye eşlemek için */
+  const videoMarksRef = useRef<ses.VideoMark[]>([])
+  const [videoCurrentSec, setVideoCurrentSec] = useState<number>(0)
   /** Bir kez işlenen basış tekrar puanlanmasın */
   const seen = useRef(new Set<string>())
   /** Cevabı bir kez notlansın */
@@ -388,12 +391,16 @@ export default function AmfiHostV2() {
     (v: HTMLVideoElement) => {
       const s = sessionRef.current
       const sec = secretRef.current
-      if (!s || !sec?.script || !s.video) return
+      if (!s || !s.video) return
+
+      videoMarksRef.current = [{ t: Date.now(), sec: 0 }]
+      setVideoCurrentSec(0)
 
       const kancalar = {
         onStart: () => {
           const t = Date.now()
           marksRef.current = [{ t, i: 0 }]
+          videoMarksRef.current = [{ t, sec: 0 }]
           const cur = sessionRef.current
           if (cur) {
             void ses.saveSession({
@@ -428,9 +435,12 @@ export default function AmfiHostV2() {
 
         const onTimeUpdate = () => {
           if (isPausedRef.current) return
+          const curSec = v.currentTime
+          setVideoCurrentSec(curSec)
+          videoMarksRef.current.push({ t: Date.now(), sec: curSec })
           const dur = v.duration
-          if (Number.isFinite(dur) && dur > 0) {
-            const oran = Math.min(1, v.currentTime / dur)
+          if (Number.isFinite(dur) && dur > 0 && sec?.script?.length) {
+            const oran = Math.min(1, curSec / dur)
             const idx = Math.floor(oran * sec.script.length)
             kancalar.onBoundary(idx)
           }
@@ -439,7 +449,9 @@ export default function AmfiHostV2() {
         const onEnded = () => {
           v.removeEventListener('timeupdate', onTimeUpdate)
           v.removeEventListener('ended', onEnded)
-          kancalar.onBoundary(sec.script.length)
+          if (sec?.script?.length) {
+            kancalar.onBoundary(sec.script.length)
+          }
           void kancalar.onEnd()
         }
 
@@ -481,11 +493,20 @@ export default function AmfiHostV2() {
         v.currentTime = 0
         void v.play().catch(() => {})
 
+        const onTimeUpdate = () => {
+          if (isPausedRef.current) return
+          const curSec = v.currentTime
+          setVideoCurrentSec(curSec)
+          videoMarksRef.current.push({ t: Date.now(), sec: curSec })
+        }
+        v.addEventListener('timeupdate', onTimeUpdate)
+
         kancalar.onStart()
 
-        const audioHandle = playAudioFile(sesKaydi.blob, sec.script.length, kancalar)
+        const audioHandle = playAudioFile(sesKaydi.blob, sec?.script?.length || 100, kancalar)
         speakRef.current = {
           cancel: () => {
+            v.removeEventListener('timeupdate', onTimeUpdate)
             audioHandle.cancel()
             v.pause()
             v.currentTime = 0
@@ -508,11 +529,20 @@ export default function AmfiHostV2() {
       v.currentTime = 0
       void v.play().catch(() => {})
 
+      const onTimeUpdate = () => {
+        if (isPausedRef.current) return
+        const curSec = v.currentTime
+        setVideoCurrentSec(curSec)
+        videoMarksRef.current.push({ t: Date.now(), sec: curSec })
+      }
+      v.addEventListener('timeupdate', onTimeUpdate)
+
       kancalar.onStart()
 
-      const ttsHandle = speak(sec.script, voice, kancalar)
+      const ttsHandle = speak(sec?.script || '', voice, kancalar)
       speakRef.current = {
         cancel: () => {
+          v.removeEventListener('timeupdate', onTimeUpdate)
           ttsHandle.cancel()
           v.pause()
           v.currentTime = 0
@@ -535,14 +565,16 @@ export default function AmfiHostV2() {
   const basla = useCallback(() => {
     const s = sessionRef.current
     const sec = secretRef.current
-    if (!s || !sec?.script) return
+    if (!s || (!sec?.script && !s.video)) return
     if (!participants.length) {
       toast('Henüz kimse katılmadı.', 'error')
       return
     }
 
     marksRef.current = []
+    videoMarksRef.current = []
     setCharIndex(0)
+    setVideoCurrentSec(0)
     setIsPaused(false)
     isPausedRef.current = false
 
@@ -659,6 +691,7 @@ export default function AmfiHostV2() {
             gizli.wrongBlocks,
             partsRef.current,
             oncekiler,
+            videoMarksRef.current,
           )
         } catch (err) {
           console.error('[amfi] basış çözülemedi:', err)
@@ -852,11 +885,21 @@ export default function AmfiHostV2() {
   const script = secret?.script ?? ''
   const wrongs = secret?.wrongBlocks ?? []
 
-  /** Şu an okunan yerin yakınındaki hata (yalnızca hoca görür) */
-  const yakinHata = useMemo(
-    () => wrongs.find((w) => charIndex >= w.start - 40 && charIndex <= w.end + 120) ?? null,
-    [wrongs, charIndex],
-  )
+  /** Şu an okunan yerin veya oynatılan videonun yakınındaki hata (yalnızca hoca görür) */
+  const yakinHata = useMemo(() => {
+    if (session?.video) {
+      const vHit = wrongs.find((w) => {
+        if (w.videoTimestamp !== undefined) {
+          const start = w.videoTimestamp
+          const end = w.videoEndTimestamp ?? start
+          return videoCurrentSec >= Math.max(0, start - 1) && videoCurrentSec <= end + 10
+        }
+        return false
+      })
+      if (vHit) return vHit
+    }
+    return wrongs.find((w) => charIndex >= w.start - 40 && charIndex <= w.end + 120) ?? null
+  }, [wrongs, charIndex, session?.video, videoCurrentSec])
 
   const hits = catches.filter((c) => c.status === 'hit')
   const yakalananHatalar = new Set(hits.map((c) => c.wrongIndex))
@@ -1490,7 +1533,7 @@ export default function AmfiHostV2() {
                   src={videoUrl}
                   controls
                   playsInline
-                  className="max-h-[440px] w-full object-contain mx-auto rounded-xs"
+                  className="max-h-[460px] w-full object-contain mx-auto rounded-xs"
                   muted={Boolean(session.video && !session.video.hasAudio)}
                 />
               </div>
@@ -1501,21 +1544,28 @@ export default function AmfiHostV2() {
                     {session.video?.name ?? 'Ders Videosu'}
                   </span>
                 </div>
-                <span className="label text-[10px] text-paper-edge font-mono">
-                  {session.video?.hasAudio ? '🔊 KENDİ SESİYLE' : '🔇 SESSİZ VİDEO'}
-                </span>
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-xs font-bold text-paper bg-white/10 px-2 py-0.5 rounded-xs">
+                    ⏱️ {fmtSec(videoCurrentSec)}
+                  </span>
+                  <span className="label text-[10px] text-paper-edge font-mono">
+                    {session.video?.hasAudio ? '🔊 KENDİ SESİYLE' : '🔇 SESSİZ VİDEO'}
+                  </span>
+                </div>
               </div>
             </div>
           )}
 
-          {/* Metin — okunan kelime vurgulu */}
-          <div className="file-card-tabbed border-l-ink p-8 sm:p-10">
-            <p className="font-display text-[26px] leading-[1.5] sm:text-[32px]">
-              <span className="text-ink-faint">{okunan}</span>
-              {suAn && <span className="bg-flag-soft font-semibold text-ink px-1 rounded-xs">{suAn}</span>}
-              <span className="text-ink">{gelecek}</span>
-            </p>
-          </div>
+          {/* Metin — okunan kelime vurgulu (Metin varsa) */}
+          {(!session.video || script.length > 25) && (
+            <div className="file-card-tabbed border-l-ink p-8 sm:p-10">
+              <p className="font-display text-[26px] leading-[1.5] sm:text-[32px]">
+                <span className="text-ink-faint">{okunan}</span>
+                {suAn && <span className="bg-flag-soft font-semibold text-ink px-1 rounded-xs">{suAn}</span>}
+                <span className="text-ink">{gelecek}</span>
+              </p>
+            </div>
+          )}
 
           {/* Yalnızca hocanın gördüğü uyarı */}
           <AnimatePresence>
@@ -1525,11 +1575,37 @@ export default function AmfiHostV2() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ ease: EASE }}
-                className="file-card border-l-4 border-l-flag p-5"
+                className="file-card border-l-4 border-l-flag p-5 bg-flag-soft/40 shadow-lift"
               >
-                <p className="label font-bold text-flag">ŞU AN OKUNAN HATA · YALNIZCA SEN GÖRÜYORSUN</p>
-                <p className="mt-2 font-serif text-base text-mark">“{yakinHata.text}”</p>
-                <p className="mt-1.5 text-sm leading-relaxed text-ink">{yakinHata.explanation}</p>
+                <div className="flex items-center justify-between">
+                  <p className="label font-bold text-flag">
+                    {yakinHata.videoTimestamp !== undefined
+                      ? `⏱️ ${fmtSec(yakinHata.videoTimestamp)} TUZAĞI (10 sn penceresi) · YALNIZCA SEN GÖRÜYORSUN`
+                      : 'ŞU AN OKUNAN HATA · YALNIZCA SEN GÖRÜYORSUN'}
+                  </p>
+                  {yakinHata.videoTimestamp !== undefined && (
+                    <span className="font-mono text-xs font-bold text-flag bg-flag-soft px-2 py-0.5 rounded-full border border-flag/30">
+                      Saniye: {fmtSec(yakinHata.videoTimestamp)}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-2 font-serif text-lg font-bold text-mark">“{yakinHata.text}”</p>
+                {yakinHata.explanation && (
+                  <p className="mt-1.5 text-sm leading-relaxed text-ink">{yakinHata.explanation}</p>
+                )}
+                {yakinHata.correction && (
+                  <p className="mt-1 text-xs text-verify font-semibold">
+                    ✓ Doğrusu: {yakinHata.correction}
+                  </p>
+                )}
+                {yakinHata.followUp && (
+                  <div className="mt-3 rounded-xs border border-paper-edge bg-paper p-3 text-xs">
+                    <p className="font-bold text-ink">❓ 5 Şıklı Ek Soru: {yakinHata.followUp.question}</p>
+                    <p className="mt-1 text-verify font-medium">
+                      ✓ Doğru Şık: {yakinHata.followUp.options[yakinHata.followUp.correctIndex]}
+                    </p>
+                  </div>
+                )}
               </motion.div>
             )}
           </AnimatePresence>

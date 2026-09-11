@@ -14,7 +14,7 @@ import type {
   SessionSecret,
   SurveyResponse,
 } from './types'
-import { fmtDate } from './utils'
+import { fmtDate, fmtSec } from './utils'
 
 export interface ExportData {
   lesson: Lesson
@@ -315,10 +315,14 @@ export function exportSessionToExcel(data: ExportData) {
       const pct = participants.length ? Math.round((hits.length / participants.length) * 100) : 0
       const fuPct = cevaplanan.length ? Math.round((dogru / cevaplanan.length) * 100) : 0
 
+      const trapTitle = w.videoTimestamp !== undefined
+        ? `[⏱️ ${fmtSec(w.videoTimestamp)}] ${w.text}`
+        : w.text
+
       sheet3Rows.push(
         makeRow([
           makeCell(i + 1, 'sDataCenter', 'Number'),
-          makeCell(w.text, 'sData'),
+          makeCell(trapTitle, 'sData'),
           makeCell(w.explanation || '-', 'sData'),
           makeCell(w.correction || '-', 'sDataGreen'),
           makeCell(w.difficulty?.toUpperCase() || 'ORTA', 'sDataCenter'),

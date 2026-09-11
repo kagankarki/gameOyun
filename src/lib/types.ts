@@ -274,6 +274,10 @@ export interface WrongBlock {
   /** Sürekli okumada ham metindeki karakter aralığı */
   start: number
   end: number
+  /** Video için başlangıç saniyesi (örn. 45.5 saniye) */
+  videoTimestamp?: number
+  /** Video için bitiş saniyesi (isteğe bağlı) */
+  videoEndTimestamp?: number
   /** Zorluk derecesi */
   difficulty?: 'kolay' | 'orta' | 'zor'
   /** Yakalayan öğrenciye sorulan ek soru — hoca hazırlık ekranında yazar */

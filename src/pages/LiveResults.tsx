@@ -25,7 +25,7 @@ import type {
 import { useToast } from '@/components/Toast'
 import { altBoyutOrtalamalari, CALISMA_BASLIGI } from '@/lib/survey'
 import { exportSessionToExcel } from '@/lib/exportExcel'
-import { cx, fmtDate, initials } from '@/lib/utils'
+import { cx, fmtDate, fmtSec, initials } from '@/lib/utils'
 
 export default function LiveResults() {
   const { id } = useParams()
@@ -302,7 +302,14 @@ export default function LiveResults() {
                       #{i + 1}
                     </span>
                     <div>
-                      <p className="font-medium text-ink">"{wrong.text}"</p>
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-ink">"{wrong.text}"</p>
+                        {wrong.videoTimestamp !== undefined && (
+                          <span className="rounded-full bg-paper-deep border border-paper-edge px-2 py-0.5 font-mono text-[10px] font-semibold text-mark">
+                            ⏱️ {fmtSec(wrong.videoTimestamp)}
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-0.5 text-xs text-ink-muted">
                         Doğrusu: <span className="text-verify">{wrong.correction || 'Belirtilmemiş'}</span> · Zorluk: {wrong.difficulty?.toUpperCase() || 'ORTA'}
                       </p>

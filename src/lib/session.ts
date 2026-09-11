@@ -640,6 +640,16 @@ export interface SpeechMark {
   i: number
 }
 
+export interface VideoMark {
+  /** Duvar saati */
+  t: number
+  /** Videonun o andaki saniyesi */
+  sec: number
+}
+
+/** Videoda 10 saniyelik yakalama toleransı */
+export const VIDEO_CATCH_WINDOW_MS = 10000
+
 /** Verilen anda metnin hangi karakterinde olduğumuz */
 export function charIndexAt(marks: SpeechMark[], t: number): number {
   if (!marks.length) return 0
@@ -655,6 +665,31 @@ export function charIndexAt(marks: SpeechMark[], t: number): number {
   return marks[lo].i
 }
 
+/** Verilen anda videonun hangi saniyesinde olduğumuz */
+export function videoSecAt(marks: VideoMark[], t: number): number | null {
+  if (!marks.length) return null
+  let lo = 0
+  let hi = marks.length - 1
+  if (t <= marks[0].t) {
+    const diffSec = (t - marks[0].t) / 1000
+    return Math.max(0, marks[0].sec + diffSec)
+  }
+  if (t >= marks[hi].t) {
+    const diffSec = (t - marks[hi].t) / 1000
+    return marks[hi].sec + diffSec
+  }
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1
+    if (marks[mid].t <= t) lo = mid
+    else hi = mid
+  }
+  const m1 = marks[lo]
+  const m2 = marks[hi]
+  if (m2.t === m1.t) return m1.sec
+  const frac = (t - m1.t) / (m2.t - m1.t)
+  return m1.sec + frac * (m2.sec - m1.sec)
+}
+
 /** Metnin verilen karakterine ilk ne zaman ulaşıldığı (yoksa null) */
 function timeAtChar(marks: SpeechMark[], charIndex: number): number | null {
   const m = marks.find((x) => x.i >= charIndex)
@@ -664,16 +699,41 @@ function timeAtChar(marks: SpeechMark[], charIndex: number): number | null {
 /**
  * Basış hangi hataya denk geliyor?
  *
- * Her hata için "duyulmaya başlandığı an" ile "bitişinden CATCH_WINDOW_MS
- * sonrası" arasında bir pencere açıyoruz. Basış bu pencerelerden birine
- * düşerse yakalama sayılır; birden fazlasına düşerse en yenisi kazanır
- * (öğrenci en son duyduğu şeye tepki veriyordur).
+ * Video oynatılıyorsa video saniyesi baz alınır ve 10 saniyelik yakalama penceresi açılır.
+ * Metin okunuyorsa karakter/zaman eşleşmesi baz alınır.
  */
 export function matchWrong(
   marks: SpeechMark[],
   wrongBlocks: WrongBlock[],
   flaggedAt: number,
+  videoMarks?: VideoMark[],
 ): number | null {
+  // 1. Video işaretleri varsa ve saniyeli hata varsa önce videodan eşleştir
+  if (videoMarks && videoMarks.length > 0) {
+    const vSec = videoSecAt(videoMarks, flaggedAt)
+    if (vSec !== null) {
+      let best: number | null = null
+      let bestStart = -1
+
+      wrongBlocks.forEach((w, index) => {
+        if (w.videoTimestamp !== undefined) {
+          const startSec = w.videoTimestamp
+          const endSec = w.videoEndTimestamp ?? startSec
+          const windowSec = VIDEO_CATCH_WINDOW_MS / 1000 // 10 saniye
+          if (vSec >= startSec - 0.5 && vSec <= endSec + windowSec) {
+            if (startSec > bestStart) {
+              bestStart = startSec
+              best = index
+            }
+          }
+        }
+      })
+
+      if (best !== null) return best
+    }
+  }
+
+  // 2. Metin karakteri ile eşleştir (Fallback)
   let best: number | null = null
   let bestStart = -1
 
@@ -712,8 +772,9 @@ export async function resolveCatch(
   wrongBlocks: WrongBlock[],
   participants: Participant[],
   alreadyCaught: Set<number>,
+  videoMarks?: VideoMark[],
 ): Promise<Catch> {
-  const wrongIndex = matchWrong(marks, wrongBlocks, c.flaggedAt)
+  const wrongIndex = matchWrong(marks, wrongBlocks, c.flaggedAt, videoMarks)
   const p = participants.find((x) => x.id === c.participantId)
 
   /* ── Boşa basma ── */
@@ -737,12 +798,23 @@ export async function resolveCatch(
 
   /* ── Yakaladı ── */
   const wrong = wrongBlocks[wrongIndex]
-  const basladi = timeAtChar(marks, wrong.start) ?? c.flaggedAt
-  const bitti = timeAtChar(marks, wrong.end) ?? basladi
-  // Hatanın okunması bittikten sonra ne kadar çabuk bastı?
-  const gecikme = Math.max(0, c.flaggedAt - bitti)
-  const oran = 1 - gecikme / CATCH_WINDOW_MS
-  const speedBonus = Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, oran)))
+  let speedBonus = 0
+
+  if (wrong.videoTimestamp !== undefined && videoMarks && videoMarks.length > 0) {
+    const vSec = videoSecAt(videoMarks, c.flaggedAt) ?? wrong.videoTimestamp
+    const endSec = wrong.videoEndTimestamp ?? wrong.videoTimestamp
+    const gecikme = Math.max(0, (vSec - endSec) * 1000)
+    const oran = 1 - gecikme / VIDEO_CATCH_WINDOW_MS
+    speedBonus = Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, oran)))
+  } else {
+    const basladi = timeAtChar(marks, wrong.start) ?? c.flaggedAt
+    const bitti = timeAtChar(marks, wrong.end) ?? basladi
+    // Hatanın okunması bittikten sonra ne kadar çabuk bastı?
+    const gecikme = Math.max(0, c.flaggedAt - bitti)
+    const oran = 1 - gecikme / CATCH_WINDOW_MS
+    speedBonus = Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, oran)))
+  }
+
   const points = (wrong.points ?? 100) + speedBonus
 
   const resolved: Catch = {

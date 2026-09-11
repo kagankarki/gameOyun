@@ -773,8 +773,17 @@ export async function resolveCatch(
   participants: Participant[],
   alreadyCaught: Set<number>,
   videoMarks?: VideoMark[],
+  /**
+   * Eşleştirmede kullanılacak an. Öğrencinin telefon saati host'unkinden
+   * sapabildiği için (NTP kaymaları), varsa host'un basışı aldığı an
+   * geçilir — böylece hem video hem metin çizelgesi TEK saatle (host)
+   * hizalanır ve doğru saniyede basan herkes yakalar. Yoksa öğrencinin
+   * bildirdiği `flaggedAt`'e düşülür.
+   */
+  matchTime?: number,
 ): Promise<Catch> {
-  const wrongIndex = matchWrong(marks, wrongBlocks, c.flaggedAt, videoMarks)
+  const t = matchTime ?? c.flaggedAt
+  const wrongIndex = matchWrong(marks, wrongBlocks, t, videoMarks)
   const p = participants.find((x) => x.id === c.participantId)
 
   /* ── Boşa basma ── */
@@ -801,16 +810,16 @@ export async function resolveCatch(
   let speedBonus = 0
 
   if (wrong.videoTimestamp !== undefined && videoMarks && videoMarks.length > 0) {
-    const vSec = videoSecAt(videoMarks, c.flaggedAt) ?? wrong.videoTimestamp
+    const vSec = videoSecAt(videoMarks, t) ?? wrong.videoTimestamp
     const endSec = wrong.videoEndTimestamp ?? wrong.videoTimestamp
     const gecikme = Math.max(0, (vSec - endSec) * 1000)
     const oran = 1 - gecikme / VIDEO_CATCH_WINDOW_MS
     speedBonus = Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, oran)))
   } else {
-    const basladi = timeAtChar(marks, wrong.start) ?? c.flaggedAt
+    const basladi = timeAtChar(marks, wrong.start) ?? t
     const bitti = timeAtChar(marks, wrong.end) ?? basladi
     // Hatanın okunması bittikten sonra ne kadar çabuk bastı?
-    const gecikme = Math.max(0, c.flaggedAt - bitti)
+    const gecikme = Math.max(0, t - bitti)
     const oran = 1 - gecikme / CATCH_WINDOW_MS
     speedBonus = Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, oran)))
   }

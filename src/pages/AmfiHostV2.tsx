@@ -187,6 +187,11 @@ export default function AmfiHostV2() {
   const [videoCurrentSec, setVideoCurrentSec] = useState<number>(0)
   /** Bir kez işlenen basış tekrar puanlanmasın */
   const seen = useRef(new Set<string>())
+  /**
+   * Basışın host'a ULAŞTIĞI an (host saatiyle). Eşleştirme bununla yapılır;
+   * öğrencinin telefon saati host'tan sapabildiği için `flaggedAt` güvenilmez.
+   */
+  const alinanAn = useRef(new Map<string, number>())
   /** Cevabı bir kez notlansın */
   const graded = useRef(new Set<string>())
   /** Ön/son test kâğıdı bir kez notlansın */
@@ -384,6 +389,16 @@ export default function AmfiHostV2() {
     return () => window.removeEventListener('keydown', onKey)
   }, [durdurVeyaDevamEt])
 
+  /* ── Videoyu ileri / geri al ── */
+  const videoAtla = useCallback((delta: number) => {
+    const v = videoRef.current
+    if (!v) return
+    const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : Infinity
+    const hedef = Math.max(0, Math.min(dur, v.currentTime + delta))
+    v.currentTime = hedef
+    // seeked olayı videoMarks'ı ve konumu güncelleyecek (bkz. baslatVideo).
+  }, [])
+
   /**
    * Video oynatıcısını başlatır (DOM'da <video ref={videoRef}> mounted olduktan sonra çalışır)
    */
@@ -446,8 +461,21 @@ export default function AmfiHostV2() {
           }
         }
 
+        // İleri/geri alınca (seek) eşlemeyi anında güncelle — yoksa seek'ten
+        // hemen sonra gelen basış eski saniyeye denk gelir.
+        const onSeeked = () => {
+          const curSec = v.currentTime
+          setVideoCurrentSec(curSec)
+          videoMarksRef.current.push({ t: Date.now(), sec: curSec })
+          const dur = v.duration
+          if (Number.isFinite(dur) && dur > 0 && sec?.script?.length) {
+            kancalar.onBoundary(Math.floor(Math.min(1, curSec / dur) * sec.script.length))
+          }
+        }
+
         const onEnded = () => {
           v.removeEventListener('timeupdate', onTimeUpdate)
+          v.removeEventListener('seeked', onSeeked)
           v.removeEventListener('ended', onEnded)
           if (sec?.script?.length) {
             kancalar.onBoundary(sec.script.length)
@@ -456,6 +484,7 @@ export default function AmfiHostV2() {
         }
 
         v.addEventListener('timeupdate', onTimeUpdate)
+        v.addEventListener('seeked', onSeeked)
         v.addEventListener('ended', onEnded)
 
         kancalar.onStart()
@@ -463,6 +492,7 @@ export default function AmfiHostV2() {
         speakRef.current = {
           cancel: () => {
             v.removeEventListener('timeupdate', onTimeUpdate)
+            v.removeEventListener('seeked', onSeeked)
             v.removeEventListener('ended', onEnded)
             v.pause()
             v.currentTime = 0
@@ -670,6 +700,9 @@ export default function AmfiHostV2() {
     const bekleyen = catches.filter((c) => c.status === 'pending' && !seen.current.has(c.id))
     for (const c of bekleyen) {
       seen.current.add(c.id)
+      // Basışın host'a ulaştığı anı HEMEN (senkron) damgala — kuyruk
+      // gecikmesinden etkilenmesin. Eşleştirme host saatiyle yapılır.
+      if (!alinanAn.current.has(c.id)) alinanAn.current.set(c.id, Date.now())
       queue.current = queue.current.then(async () => {
         const gizli = secretRef.current
         if (!gizli) return
@@ -692,6 +725,7 @@ export default function AmfiHostV2() {
             partsRef.current,
             oncekiler,
             videoMarksRef.current,
+            alinanAn.current.get(c.id),
           )
         } catch (err) {
           console.error('[amfi] basış çözülemedi:', err)
@@ -1537,14 +1571,36 @@ export default function AmfiHostV2() {
                   muted={Boolean(session.video && !session.video.hasAudio)}
                 />
               </div>
-              <div className="mt-2 flex items-center justify-between px-2 pt-1 text-xs text-paper-edge">
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 px-2 pt-1 text-xs text-paper-edge">
                 <div className="flex items-center gap-2">
                   <span>🎬</span>
-                  <span className="font-semibold text-paper truncate max-w-sm">
+                  <span className="font-semibold text-paper truncate max-w-[200px]">
                     {session.video?.name ?? 'Ders Videosu'}
                   </span>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  {/* İleri / geri alma — yalnızca video kendi sesiyle giderken güvenli.
+                      Sessiz + harici ses/TTS modunda seek ses ile senkronu bozar. */}
+                  {session.video?.hasAudio && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => videoAtla(-10)}
+                        title="10 saniye geri al"
+                        className="rounded-xs bg-white/10 px-2 py-1 font-mono text-xs font-bold text-paper hover:bg-white/20 transition-colors"
+                      >
+                        ⏪ 10
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => videoAtla(10)}
+                        title="10 saniye ileri al"
+                        className="rounded-xs bg-white/10 px-2 py-1 font-mono text-xs font-bold text-paper hover:bg-white/20 transition-colors"
+                      >
+                        10 ⏩
+                      </button>
+                    </div>
+                  )}
                   <span className="font-mono text-xs font-bold text-paper bg-white/10 px-2 py-0.5 rounded-xs">
                     ⏱️ {fmtSec(videoCurrentSec)}
                   </span>

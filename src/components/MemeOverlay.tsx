@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 
 const CORRECT_MEMES = [
@@ -28,8 +28,10 @@ interface Props {
   autoCloseMs?: number
 }
 
-export default function MemeOverlay({ type, onClose, autoCloseMs = 3000 }: Props) {
+export default function MemeOverlay({ type, onClose, autoCloseMs = 2000 }: Props) {
   const [memeUrl, setMemeUrl] = useState<string | null>(null)
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
 
   useEffect(() => {
     if (!type) {
@@ -37,6 +39,7 @@ export default function MemeOverlay({ type, onClose, autoCloseMs = 3000 }: Props
       return
     }
 
+    // Program 1 adet random resim seçer ve kilitler (re-render'larda dönmez)
     const list = type === 'correct' ? CORRECT_MEMES : INCORRECT_MEMES
     const randomIndex = Math.floor(Math.random() * list.length)
     setMemeUrl(list[randomIndex])
@@ -48,12 +51,13 @@ export default function MemeOverlay({ type, onClose, autoCloseMs = 3000 }: Props
       navigator.vibrate?.(120)
     }
 
+    // Tam 2 saniye sonra otomatik kapanır ve arkadaki soru/ekran görünür
     const timer = setTimeout(() => {
-      onClose()
+      onCloseRef.current()
     }, autoCloseMs)
 
     return () => clearTimeout(timer)
-  }, [type, onClose, autoCloseMs])
+  }, [type, autoCloseMs])
 
   return (
     <AnimatePresence>

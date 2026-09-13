@@ -415,7 +415,7 @@ export default function AmfiPlayV2({ sessionId, participantId, onLeave }: Props)
         {!session.isPaused && session.phase === 'reveal' && '■ BEKLE'}
       </p>
 
-      <MemeOverlay type={memeType} onClose={() => setMemeType(null)} />
+      <MemeOverlay type={memeType} onClose={() => setMemeType(null)} autoCloseMs={2000} />
     </div>
   )
 }

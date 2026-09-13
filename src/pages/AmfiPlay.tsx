@@ -245,7 +245,7 @@ export default function AmfiPlay({ sessionId, participantId, onLeave }: Props) {
         {session.phase === 'reveal' && '■ BÖLÜM KAPANDI'}
       </p>
 
-      <MemeOverlay type={memeType} onClose={() => setMemeType(null)} />
+      <MemeOverlay type={memeType} onClose={() => setMemeType(null)} autoCloseMs={2000} />
     </div>
   )
 }

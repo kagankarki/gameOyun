@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
+import MemeOverlay from '@/components/MemeOverlay'
 import Button3D from '@/components/Button3D'
 import QuizRunner from '@/components/QuizRunner'
 import { RatingForm } from '@/components/Rating'
@@ -25,7 +26,10 @@ export default function AmfiPlay({ sessionId, participantId, onLeave }: Props) {
   /** Bu öğrencinin bastığı bölüm — aynı bölüme ikinci kez basamasın */
   const [buzzedBlock, setBuzzedBlock] = useState<number | null>(null)
   const [flash, setFlash] = useState(false)
+  const [memeType, setMemeType] = useState<'correct' | 'incorrect' | null>(null)
   const prevScore = useRef<number | null>(null)
+  const prevHits = useRef<number | null>(null)
+  const prevFalseAlarms = useRef<number | null>(null)
   const [delta, setDelta] = useState<number | null>(null)
 
   useEffect(() => ses.watchSession(sessionId, setSession), [sessionId])
@@ -52,6 +56,20 @@ export default function AmfiPlay({ sessionId, participantId, onLeave }: Props) {
     }
     prevScore.current = me.score
   }, [me?.score])
+
+  /* Hits / FalseAlarms artınca meme göster (Doğru -> correct, Boşa basma -> incorrect) */
+  useEffect(() => {
+    if (!me) return
+
+    if (prevHits.current !== null && me.hits > prevHits.current) {
+      setMemeType('correct')
+    } else if (prevFalseAlarms.current !== null && me.falseAlarms > prevFalseAlarms.current) {
+      setMemeType('incorrect')
+    }
+
+    prevHits.current = me.hits
+    prevFalseAlarms.current = me.falseAlarms
+  }, [me?.hits, me?.falseAlarms])
 
   const windowOpen = session?.phase === 'speaking' || session?.phase === 'grace'
   const alreadyBuzzed = session ? buzzedBlock === session.currentBlockIndex : false
@@ -226,6 +244,8 @@ export default function AmfiPlay({ sessionId, participantId, onLeave }: Props) {
         {session.phase === 'grace' && '● SON SANİYELER'}
         {session.phase === 'reveal' && '■ BÖLÜM KAPANDI'}
       </p>
+
+      <MemeOverlay type={memeType} onClose={() => setMemeType(null)} />
     </div>
   )
 }

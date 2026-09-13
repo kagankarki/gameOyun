@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 
+import MemeOverlay from '@/components/MemeOverlay'
 import Button3D from '@/components/Button3D'
 import QuizRunner, { QuizSelfSummary } from '@/components/QuizRunner'
 import { RatingForm } from '@/components/Rating'
@@ -35,8 +36,11 @@ export default function AmfiPlayV2({ sessionId, participantId, onLeave }: Props)
   const [busy, setBusy] = useState(false)
   const [delta, setDelta] = useState<number | null>(null)
   const [flash, setFlash] = useState(false)
+  const [memeType, setMemeType] = useState<'correct' | 'incorrect' | null>(null)
 
   const prevScore = useRef<number | null>(null)
+  const processedCatchesRef = useRef<Record<string, string>>({})
+  const initialCatchesProcessed = useRef(false)
 
   useEffect(() => ses.watchSession(sessionId, setSession), [sessionId])
   useEffect(() => ses.watchParticipants(sessionId, setParticipants), [sessionId])
@@ -84,6 +88,49 @@ export default function AmfiPlayV2({ sessionId, participantId, onLeave }: Props)
     }
     prevScore.current = me.score
   }, [me?.score])
+
+  /* Catches güncellendikçe meme göster (Doğru bilme -> correct, Boşa basma -> incorrect) */
+  useEffect(() => {
+    if (!mine.length) return
+    if (!initialCatchesProcessed.current) {
+      // Sayfa yenilendiğinde geçmiş basışlar için meme popup gösterme
+      mine.forEach((c) => {
+        if (c.status !== 'pending') {
+          processedCatchesRef.current[c.id] = c.status
+        }
+        if (c.answerCorrect !== undefined) {
+          processedCatchesRef.current[`${c.id}_ans`] = String(c.answerCorrect)
+        }
+      })
+      initialCatchesProcessed.current = true
+      return
+    }
+
+    for (const c of mine) {
+      // 1. Hata yakalama sonucu (status: hit -> correct, miss -> incorrect)
+      if (c.status === 'hit' && processedCatchesRef.current[c.id] !== 'hit') {
+        processedCatchesRef.current[c.id] = 'hit'
+        setMemeType('correct')
+        break
+      }
+      if (c.status === 'miss' && processedCatchesRef.current[c.id] !== 'miss') {
+        processedCatchesRef.current[c.id] = 'miss'
+        setMemeType('incorrect')
+        break
+      }
+      // 2. Takip eden ek soru cevabı (answerCorrect: true -> correct, false -> incorrect)
+      if (c.answerCorrect === true && processedCatchesRef.current[`${c.id}_ans`] !== 'true') {
+        processedCatchesRef.current[`${c.id}_ans`] = 'true'
+        setMemeType('correct')
+        break
+      }
+      if (c.answerCorrect === false && processedCatchesRef.current[`${c.id}_ans`] !== 'false') {
+        processedCatchesRef.current[`${c.id}_ans`] = 'false'
+        setMemeType('incorrect')
+        break
+      }
+    }
+  }, [mine])
 
   const acik = session?.phase === 'speaking' || session?.phase === 'grace'
   /** İşlenmemiş bir basışı varken tekrar basmasın */
@@ -367,6 +414,8 @@ export default function AmfiPlayV2({ sessionId, participantId, onLeave }: Props)
         {!session.isPaused && session.phase === 'grace' && '● SON SANİYELER'}
         {!session.isPaused && session.phase === 'reveal' && '■ BEKLE'}
       </p>
+
+      <MemeOverlay type={memeType} onClose={() => setMemeType(null)} />
     </div>
   )
 }

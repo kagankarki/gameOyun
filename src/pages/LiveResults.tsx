@@ -25,6 +25,7 @@ import type {
 import { useToast } from '@/components/Toast'
 import { altBoyutOrtalamalari, CALISMA_BASLIGI } from '@/lib/survey'
 import { exportSessionToExcel } from '@/lib/exportExcel'
+import { exportLessonToExcel, type GameData } from '@/lib/exportLessonExcel'
 import { cx, fmtDate, fmtSec, initials } from '@/lib/utils'
 
 export default function LiveResults() {
@@ -43,6 +44,7 @@ export default function LiveResults() {
   const [quizAnswers, setQuizAnswers] = useState<QuizAnswer[]>([])
   const [ratings, setRatings] = useState<SessionRating[]>([])
   const [loading, setLoading] = useState(true)
+  const [exportingAll, setExportingAll] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -210,6 +212,51 @@ export default function LiveResults() {
     toast('Excel raporu başarıyla indirildi.', 'success')
   }
 
+  /**
+   * DETAYLI DÖKÜM — bu dersten açılmış BÜTÜN oyunları (oturumları) tek
+   * Excel'de toplar. Her oyunun katılımcı, yakalama, tuzak, ön/son test,
+   * anket ve yıldız verisi Firebase'den tek tek çekilir.
+   */
+  const handleExportAll = async () => {
+    if (!lesson || exportingAll) return
+    const lessonSessions = sessions.filter((s) => s.lessonId === lesson.id || s.id === lesson.id)
+    if (lessonSessions.length === 0) {
+      toast('Bu derse ait oyun (oturum) bulunamadı.', 'error')
+      return
+    }
+    setExportingAll(true)
+    try {
+      const games: GameData[] = await Promise.all(
+        lessonSessions.map(async (session): Promise<GameData> => {
+          const [gParts, gCatches, gRatings, gSurveys, gQuiz, gSecret] = await Promise.all([
+            ses.getParticipantsForSession(session.id),
+            ses.getCatchesForSession(session.id),
+            ses.getRatingsForSession(session.id),
+            ses.getSurveysForSession(session.id),
+            ses.getQuizAnswersForSession(session.id),
+            ses.getSessionSecret(session.id),
+          ])
+          return {
+            session,
+            secret: gSecret,
+            participants: gParts,
+            catches: gCatches,
+            ratings: gRatings,
+            surveys: gSurveys,
+            quizAnswers: gQuiz,
+          }
+        }),
+      )
+      exportLessonToExcel({ lesson, games })
+      toast(`${games.length} oyunluk detaylı rapor indirildi.`, 'success')
+    } catch (err) {
+      console.error('[handleExportAll] rapor üretilemedi:', err)
+      toast('Detaylı rapor üretilirken hata oluştu.', 'error')
+    } finally {
+      setExportingAll(false)
+    }
+  }
+
   if (loading) return <Loader label="Rapor getiriliyor…" />
 
   if (!lesson) {
@@ -257,9 +304,22 @@ export default function LiveResults() {
           </p>
         </div>
 
-        <Button3D tone="success" size="md" onClick={handleExport} className="shrink-0 shadow-md">
-          📥 Excel Raporu İndir (.xlsx)
-        </Button3D>
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
+          <Button3D tone="success" size="md" onClick={handleExport} className="shadow-md">
+            📥 Bu Oyunu İndir
+          </Button3D>
+          <Button3D
+            tone="primary"
+            size="md"
+            onClick={handleExportAll}
+            disabled={exportingAll}
+            className="shadow-md"
+          >
+            {exportingAll
+              ? '⏳ Hazırlanıyor…'
+              : `📊 Tüm Oyunlar — Detaylı (${sessions.length})`}
+          </Button3D>
+        </div>
       </div>
 
       {/* Özet Künyesi */}

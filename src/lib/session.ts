@@ -1242,4 +1242,61 @@ function speedBonus(reactionMs: number, blockDurationMs: number): number {
   return Math.max(0, Math.round(MAX_SPEED_BONUS * Math.min(1, ratio)))
 }
 
+/* ══════════════════════════════════════════════════════════
+   TEK SEFERLİK OKUMA — RAPORLAMA İÇİN
+   `watch*` fonksiyonları canlı dinler; rapor/Excel dökümü için ise bir
+   oturumun tüm alt verilerini tek atışta çekmek gerekir. Aşağıdakiler
+   belirli bir oturumun (oyunun) verisini Promise olarak döndürür.
+   ══════════════════════════════════════════════════════════ */
+
+/** Belirli bir koleksiyondan `sessionId` eşleşen tüm dokümanları çeker. */
+async function fetchBySession<T>(coll: string, sessionId: string): Promise<T[]> {
+  if (live()) {
+    const q = query(collection(firestore!, coll), where('sessionId', '==', sessionId))
+    const snap = await getDocs(q)
+    return snap.docs.map((d) => d.data() as T)
+  }
+  return []
+}
+
+export async function getParticipantsForSession(sessionId: string): Promise<Participant[]> {
+  if (live()) {
+    const list = await fetchBySession<Participant>('participants', sessionId)
+    return dedupeParticipants(list)
+  }
+  return dedupeParticipants(store.getParticipants().filter((p) => p.sessionId === sessionId))
+}
+
+export async function getCatchesForSession(sessionId: string): Promise<Catch[]> {
+  const list = live()
+    ? await fetchBySession<Catch>('catches', sessionId)
+    : store.getCatches().filter((c) => c.sessionId === sessionId)
+  return list.sort((a, b) => a.flaggedAt - b.flaggedAt)
+}
+
+export async function getRatingsForSession(sessionId: string): Promise<SessionRating[]> {
+  if (live()) return fetchBySession<SessionRating>('ratings', sessionId)
+  return store.getRatings().filter((r) => r.sessionId === sessionId)
+}
+
+export async function getSurveysForSession(sessionId: string): Promise<SurveyResponse[]> {
+  if (live()) return fetchBySession<SurveyResponse>('surveys', sessionId)
+  return store.getSurveys().filter((r) => r.sessionId === sessionId)
+}
+
+export async function getQuizAnswersForSession(sessionId: string): Promise<QuizAnswer[]> {
+  const list = live()
+    ? await fetchBySession<QuizAnswer>('quizAnswers', sessionId)
+    : store.getQuizAnswers().filter((a) => a.sessionId === sessionId)
+  return list.sort((a, b) => a.submittedAt - b.submittedAt)
+}
+
+export async function getSessionSecret(sessionId: string): Promise<SessionSecret | null> {
+  if (live()) {
+    const snap = await getDoc(doc(firestore!, 'sessionSecrets', sessionId))
+    return snap.exists() ? (snap.data() as SessionSecret) : null
+  }
+  return store.getSessionSecrets().find((s) => s.sessionId === sessionId) ?? null
+}
+
 export { isFirebaseConfigured }
